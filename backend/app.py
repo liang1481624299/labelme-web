@@ -95,14 +95,6 @@ def unique_target(folder: Path, name: str) -> Path:
         index += 1
 
 
-def write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    os.replace(tmp, path)
-
-
 def write_json_durable(path: Path, payload: Dict[str, Any]) -> None:
     """原子 + fsync 落盘。草稿要能扛住蓝屏/断电，不能只躺在系统缓存里。"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -275,7 +267,7 @@ def put_annotation(
     for key, value in payload.items():
         if key not in normalized:
             normalized[key] = value
-    write_json_atomic(folder / (name + ".json"), normalized)
+    write_json_durable(folder / (name + ".json"), normalized)
     return {"saved": name + ".json", "shapes": len(shapes)}
 
 
