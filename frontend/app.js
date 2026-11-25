@@ -2078,6 +2078,8 @@ async function openImage(name, carryShapes = null, keepView = null) {
   state.image = { name, w: im.naturalWidth, h: im.naturalHeight, canvas: canvasImg };
   state.index = state.images.findIndex((x) => x.name === name);
   state.selected = -1;
+  state.selectedVertex = -1;
+  state.hover = null;
   state.drawing = null;
   state.undo = [];
   state.redo = [];
@@ -2169,6 +2171,7 @@ function closeCurrentImage() {
   state.shapes = [];
   state.selected = -1;
   state.selectedVertex = -1;
+  state.hover = null;
   state.drawing = null;
   state.undo = [];
   state.redo = [];
@@ -2967,6 +2970,18 @@ function bindUi() {
   $('btnLabelCancel').addEventListener('click', () => closeLabelDialog(null));
   $('labelInput').addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') {
+      ev.preventDefault();
+      closeLabelDialog($('labelInput').value.trim() || null);
+    }
+  });
+  $('labelGroup').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      closeLabelDialog($('labelInput').value.trim() || null);
+    }
+  });
+  $('labelDesc').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
       ev.preventDefault();
       closeLabelDialog($('labelInput').value.trim() || null);
     }
