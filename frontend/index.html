@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Labelme</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app">
+  <div class="menubar" id="menubar">
+    <div class="brand">Labelme</div>
+  </div>
+
+  <div class="toolbar" id="toolbar"></div>
+
+  <div class="workspace">
+    <div class="toolstrip" id="toolstrip"></div>
+
+    <div class="canvas-wrap" id="canvasWrap">
+      <canvas id="canvas"></canvas>
+      <div class="empty-state" id="emptyState">
+        <svg viewBox="0 0 24 24" width="72" height="72" aria-hidden="true">
+          <path d="M4 5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.6"/>
+          <circle cx="9" cy="9.5" r="1.8" fill="currentColor"/>
+          <path d="M5 17l4.5-5 3.5 4 3-2.5 4 4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+        </svg>
+        <div class="empty-actions">
+          <button class="btn" id="btnOpenFile2">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 3h7l5 5v13H6z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M13 3v5h5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            打开文件(O)…
+          </button>
+          <button class="btn" id="btnUpload2">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 7a1 1 0 0 1 1-1h4l2 2h7a1 1 0 0 1 1 1v10H4z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            打开文件夹…
+          </button>
+        </div>
+        <div class="empty-tip">或将图像文件拖放到此处</div>
+      </div>
+    </div>
+
+    <div class="docks">
+      <section class="dock" id="dockLabels">
+        <header class="dock-head">
+          <span>标签列表</span>
+          <button class="dock-action" id="btnEditLabels">编辑…</button>
+        </header>
+        <div class="dock-body" id="labelList"></div>
+      </section>
+
+      <section class="dock" id="dockShapes">
+        <header class="dock-head"><span>形状列表</span></header>
+        <div class="dock-body" id="shapeList"></div>
+      </section>
+
+      <section class="dock dock-grow" id="dockImages">
+        <header class="dock-head"><span>图像列表</span></header>
+        <div class="dock-search">
+          <input id="imageSearch" type="search" placeholder="搜索文件名" autocomplete="off" />
+        </div>
+        <div class="dock-body" id="imageList"></div>
+      </section>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span class="status-left" id="statusLeft">就绪</span>
+    <span class="status-mid" id="statusMid">已标注 0/0</span>
+    <span class="status-right">
+      <span id="statusPos">x — , y —</span>
+      <span class="sep">|</span>
+      <span id="statusSession">—</span>
+      <span class="sep">|</span>
+      <span id="statusFile">未打开文件</span>
+    </span>
+  </div>
+</div>
+
+<input type="file" id="fileInput" accept="image/*" multiple hidden />
+
+<div class="modal-backdrop" id="labelModal" hidden>
+  <div class="modal modal-sm">
+    <header>输入标签</header>
+    <div class="modal-body">
+      <input id="labelInput" type="text" autocomplete="off" placeholder="标签名" />
+      <div class="recent" id="recentLabels"></div>
+    </div>
+    <footer>
+      <button class="btn" id="btnLabelCancel">取消</button>
+      <button class="btn btn-primary" id="btnLabelOk">确定</button>
+    </footer>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="sessionModal" hidden>
+  <div class="modal">
+    <header>
+      <span>选择会话</span>
+      <button class="x" data-close>&times;</button>
+    </header>
+    <div class="modal-body">
+      <p class="hint">每个浏览器会话对应 <code>data/时间戳/</code> 一个文件夹，图像与同名 JSON 存在同一目录。</p>
+      <div class="session-list" id="sessionList"></div>
+    </div>
+    <footer>
+      <button class="btn" data-close>关闭</button>
+      <button class="btn btn-primary" id="btnNewSession">新建会话</button>
+    </footer>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="bcModal" hidden>
+  <div class="modal modal-sm">
+    <header>亮度 / 对比度</header>
+    <div class="modal-body">
+      <label class="slider-row">亮度
+        <input type="range" id="brightness" min="-100" max="100" value="0" />
+        <output id="brightnessVal">0</output>
+      </label>
+      <label class="slider-row">对比度
+        <input type="range" id="contrast" min="-100" max="100" value="0" />
+        <output id="contrastVal">0</output>
+      </label>
+    </div>
+    <footer>
+      <button class="btn" id="btnBcReset">重置</button>
+      <button class="btn btn-primary" id="btnBcOk">确定</button>
+    </footer>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="labelsEditModal" hidden>
+  <div class="modal modal-sm">
+    <header>
+      <span>标签集</span>
+      <button class="x" data-close>&times;</button>
+    </header>
+    <div class="modal-body">
+      <div class="label-manage" id="labelManage"></div>
+      <div class="add-row">
+        <input id="newLabelInput" type="text" placeholder="新增标签" />
+        <button class="btn" id="btnAddLabel">添加</button>
+      </div>
+    </div>
+    <footer><button class="btn btn-primary" data-close>完成</button></footer>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="helpModal" hidden>
+  <div class="modal">
+    <header>
+      <span>快捷键与关于</span>
+      <button class="x" data-close>&times;</button>
+    </header>
+    <div class="modal-body">
+      <table class="shortcuts">
+        <tbody>
+          <tr><td>Ctrl+O</td><td>打开文件</td><td>Ctrl+S</td><td>保存标注</td></tr>
+          <tr><td>Ctrl+N</td><td>新建多边形</td><td>Ctrl+R</td><td>新建矩形</td></tr>
+          <tr><td>Ctrl+Z</td><td>撤销</td><td>Ctrl+Y</td><td>重做</td></tr>
+          <tr><td>Ctrl+D</td><td>复制形状</td><td>Delete</td><td>删除形状</td></tr>
+          <tr><td>A / D</td><td>上一张 / 下一张</td><td>Ctrl+F</td><td>适合窗口</td></tr>
+          <tr><td>Ctrl+0</td><td>原始大小</td><td>Ctrl+/-</td><td>放大 / 缩小</td></tr>
+          <tr><td>Enter</td><td>完成折线/多边形</td><td>Esc</td><td>取消绘制</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">
+        labelme-web 7.11.0 · JSON 与桌面版 labelme 7.11.0 完全一致（version / flags / shapes /
+        imagePath / imageData / imageHeight / imageWidth）。<br />
+        AI 辅助标注（SAM）需要服务端模型，Web 版暂未启用，其余标注功能与桌面版对标。
+      </p>
+    </div>
+    <footer><button class="btn btn-primary" data-close>关闭</button></footer>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+[Unit]
+Description=labelme-web 7.11.0 (annotation web frontend)
+Documentation=https://github.com/wkentaro/labelme
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=labelme
+Group=labelme
+WorkingDirectory=/opt/labelme-web
+Environment=LABELME_WEB_MAX_UPLOAD_MB=200
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/labelme-web/.venv/bin/uvicorn backend.app:app --host 127.0.0.1 --port 9631 --workers 2 --proxy-headers --forwarded-allow-ips=127.0.0.1
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+# data/ 是唯一需要写入的位置
+ReadWritePaths=/opt/labelme-web/data
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
