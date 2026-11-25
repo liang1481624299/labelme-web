@@ -245,6 +245,14 @@ html, body {
 .admin-msg { font-size: 13px; margin-top: 10px; white-space: pre-wrap; }
 .admin-msg.err { color: #ffb4b4; }
 .admin-msg.ok { color: #8fe3a3; }
+.hint { color: var(--text-faint); font-size: 12px; line-height: 1.7; margin: 10px 0 0; }
+.batch-out {
+  margin-top: 10px; max-height: 240px; overflow: auto;
+  padding: 10px 12px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  font: 12px/1.7 ui-monospace, Consolas, monospace;
+}
+.empty-cell { color: var(--text-faint); text-align: center; }
 
 @media (max-width: 720px) {
   .admin-body { padding: 14px; }

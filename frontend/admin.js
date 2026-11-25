@@ -130,6 +130,37 @@ function renderUsers(users) {
   });
 }
 
+function renderProjects(projects) {
+  const box = $('projectRows');
+  box.innerHTML = '';
+  if (!projects.length) {
+    box.innerHTML = '<tr><td colspan="4" class="empty-cell">还没有工程</td></tr>';
+    return;
+  }
+  projects.forEach((p) => {
+    const row = document.createElement('tr');
+    const ownerCell = document.createElement('td');
+    ownerCell.textContent = p.owner;
+    const nameCell = document.createElement('td');
+    nameCell.textContent = p.name;
+    const sessionsCell = document.createElement('td');
+    sessionsCell.textContent = String(p.sessions);
+    const createdCell = document.createElement('td');
+    createdCell.textContent = fmt(p.created_at);
+    row.append(ownerCell, nameCell, sessionsCell, createdCell);
+    box.appendChild(row);
+  });
+}
+
+async function loadProjects() {
+  try {
+    const res = await api('GET', '/api/projects?scope=all');
+    renderProjects(res.projects || []);
+  } catch (err) {
+    msg($('projectMsg'), err.message, false);
+  }
+}
+
 async function load() {
   try {
     if (!me) {
@@ -147,6 +178,7 @@ async function load() {
 
     const users = await api('GET', '/api/admin/users');
     renderUsers(users.users || []);
+    await loadProjects();
   } catch (err) {
     msg($('listMsg'), err.message, false);
   }
@@ -182,6 +214,71 @@ $('createForm').addEventListener('submit', async (event) => {
     await load();
   } catch (err) {
     msg($('createMsg'), err.message, false);
+  }
+});
+
+let batchRows = [];
+
+$('batchForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const count = Number($('batchCount').value || 0);
+  const start = $('batchStart').value.trim();
+  if (!count || count < 1 || count > 200) {
+    msg($('batchMsg'), '数量要在 1–200 之间', false);
+    return;
+  }
+  const btn = $('btnBatch');
+  btn.disabled = true;
+  msg($('batchMsg'), `正在生成 ${count} 个账号（bcrypt 每号约 0.3 秒）…`, true);
+  try {
+    const res = await api('POST', '/api/admin/users/batch',
+      start ? { count, start } : { count });
+    batchRows = res.created || [];
+    $('batchOut').hidden = !batchRows.length;
+    $('batchOut').textContent = batchRows
+      .map((r) => `${r.username}  ${r.password}`)
+      .join('\n');
+    $('btnBatchExport').disabled = !batchRows.length;
+    msg($('batchMsg'),
+      `已创建 ${res.count} 个账号：${res.first} – ${res.last}（密码同账号，请立刻导出）`, true);
+    $('projectOwner').value = batchRows.length ? batchRows[0].username : $('projectOwner').value;
+    await load();
+  } catch (err) {
+    msg($('batchMsg'), err.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('btnBatchExport').addEventListener('click', () => {
+  if (!batchRows.length) return;
+  const csv = ['账号,密码'].concat(batchRows.map((r) => `${r.username},${r.password}`)).join('\r\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `labelme-accounts-${batchRows[0].username}-${batchRows[batchRows.length - 1].username}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+});
+
+$('projectForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const owner = $('projectOwner').value.trim();
+  const name = $('projectName').value.trim();
+  if (!owner || !name) {
+    msg($('projectMsg'), '请填写所属账号和工程名', false);
+    return;
+  }
+  try {
+    await api('POST', '/api/projects', { owner, name });
+    msg($('projectMsg'), `已为 ${owner} 新建工程「${name}」`, true);
+    $('projectName').value = '';
+    await loadProjects();
+  } catch (err) {
+    msg($('projectMsg'), err.message, false);
   }
 });
 

@@ -48,6 +48,47 @@
   </section>
 
   <section class="panel">
+    <header>批量创号</header>
+    <div class="panel-body">
+      <form class="form-row" id="batchForm">
+        <label>数量
+          <input id="batchCount" type="number" min="1" max="200" value="10" />
+        </label>
+        <label>起始 ID（可空）
+          <input id="batchStart" type="text" placeholder="留空 = 10000001 起 / 接着最大号" autocomplete="off" />
+        </label>
+        <button class="btn btn-primary" id="btnBatch" type="submit">生成</button>
+        <button class="btn" id="btnBatchExport" type="button" disabled>导出 CSV</button>
+      </form>
+      <p class="hint">账号名 = 8 位数字 ID，密码默认 = 同一个 ID（纯数字）。明文密码只显示这一次，库里只存 bcrypt 哈希。</p>
+      <div class="admin-msg" id="batchMsg"></div>
+      <pre class="batch-out" id="batchOut" hidden></pre>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header>工程管理</header>
+    <div class="panel-body">
+      <form class="form-row" id="projectForm">
+        <label>所属账号
+          <input id="projectOwner" type="text" placeholder="标注员账号" autocomplete="off" />
+        </label>
+        <label>工程名
+          <input id="projectName" type="text" placeholder="1–40 位" autocomplete="off" />
+        </label>
+        <button class="btn btn-primary" id="btnCreateProject" type="submit">新建工程</button>
+      </form>
+      <table class="table">
+        <thead>
+          <tr><th>账号</th><th>工程</th><th>会话数</th><th>创建时间</th></tr>
+        </thead>
+        <tbody id="projectRows"></tbody>
+      </table>
+      <div class="admin-msg" id="projectMsg"></div>
+    </div>
+  </section>
+
+  <section class="panel">
     <header>
       <span>账号列表</span>
       <span class="spacer"></span>

@@ -14,6 +14,7 @@ labelme-web/
 ├── backend/
 │   ├── app.py            # HTTP API + 静态托管 + 页面路由
 │   ├── auth.py           # 账号库（SQLite）、bcrypt、登录态、/admin 接口
+│   ├── workspace.py      # 工程/会话的磁盘布局、SQLite 索引、老数据迁移
 │   └── requirements.txt
 ├── frontend/
 │   ├── index.html        # 标注页（需登录）
@@ -26,12 +27,14 @@ labelme-web/
 │   └── auth.css          # 登录页与管理面板样式
 ├── dev/
 │   └── serve.py          # 本地开发前置：9630 静态 + /api 反代到 9631
-├── data/                 # 标注会话数据，运行时生成，删掉会自动重建
-│   ├── labels.txt        # 项目级标签集（每行一个，可导入/导出）
-│   └── 20260101013030/   # 一个浏览器会话一个文件夹
-│       ├── 114.jpg
-│       ├── 114.json
-│       └── .drafts/      # 崩溃草稿，正常保存后自动删除
+├── data/                 # 标注数据，运行时生成，删掉会自动重建
+│   └── <用户名>/
+│       └── <工程名>/     # 工程级标签集 labels.txt 在这里
+│           ├── labels.txt
+│           └── 20260101013030/   # 一次浏览器会话一个文件夹
+│               ├── 114.jpg
+│               ├── 114.json
+│               └── .drafts/      # 崩溃草稿，正常保存后自动删除
 ├── var/
 │   └── labelme-web.db    # 账号库（bcrypt 哈希），运行时生成，不进 Git
 ├── deploy/
@@ -41,15 +44,36 @@ labelme-web/
 └── README.md
 ```
 
-## 会话与数据布局
+## 工程、会话与数据布局
 
-浏览器第一次打开页面时，后端在 `data/` 下创建 `YYYYMMDDHHMMSS` 目录（同一秒重复则加 `_2`、`_3`），
-会话 id 存在 **sessionStorage**；刷新页面仍是当前会话，重开浏览器会接回上次会话（见下文恢复链路）。
-需要全新目录时用「文件 → 新建会话…」，也可从「文件 → 切换会话…」切换；
-用 `?session=20260101013030` 可固定打开某个会话（便于分享链接）。
+磁盘上是三层：**用户名 → 工程 → 会话**。
 
-`data/` 是纯粹的运行目录：**整个删掉也没关系**，下次新建会话（或读会话列表）时后端会自己
-`mkdir` 重建，跑着的服务不用重启。所以备份/迁移只需要拷 `data/` 本身。
+```
+data/<用户名>/<工程名>/<YYYYMMDDHHMMSS>/
+data/shiroko/电路板A/20261125102550/114.jpg
+data/shiroko/电路板A/20261125102550/114.json
+```
+
+- **用户名**来自登录账号：普通账号只能进出自己的目录树，管理员可以指定任意账号
+  （`?owner=xxx`）；跨账号访问会话一律按 404 处理，不泄露“这个会话存在”。
+- **工程**是标注的组织单位，用「文件 → 切换工程…」「文件 → 新建工程…」管理；
+  工程目录缺失时会自动创建。标签集也跟着工程走：`data/<用户名>/<工程>/labels.txt`。
+- **会话**对应一次连续标注（一个文件夹、一批图），用「文件 → 新建会话…」新建。
+
+会话 id 仍然只是 14 位时间戳（同一秒重复加 `_2`、`_3`），前端 URL、草稿键、恢复链路都不变；
+真实路径由 `var/labelme-web.db` 里的 `session_index` 表维护（`session_index(id, owner, project, created_at)`）。
+索引丢了也不要紧：访问某个 id 时会全盘扫 `data/*/*/<id>` 并自动补回；服务启动时也会把磁盘上
+存在但索引里没有的会话补进来（手工拷 `data/`、恢复备份都能直接用）。
+
+`data/` 仍然是纯运行目录：**整个删掉也没关系**，下次新建会话/列表时后端会重建；
+失效的索引行会被顺手清掉。备份/迁移只需要拷 `data/` 和 `var/labelme-web.db`。
+
+### 老布局自动迁移
+
+历史数据如果是 `data/<时间戳>/` 扁平结构，会在**第一个管理员出现后**自动搬到
+`data/<管理员>/默认工程/<时间戳>/`，旧的 `data/labels.txt` 也一并搬进该工程；
+迁移是 `shutil.move`，同一磁盘上很快，重复执行不会二次移动。用
+`LABELME_WEB_DATA` 可以把整个数据根换到别处（默认就是项目下的 `data/`）。
 
 会话内规则：**上传的原图和标注 JSON 同目录、同名**。
 
@@ -129,7 +153,14 @@ data/20260101013030/114.json    ← 该图的标注
 - 改角色、禁用/启用（禁用会立即踢掉该账号已登录的会话）；
 - 重置密码（同样踢掉旧会话，自己改自己保留当前登录）；
 - 删除账号；
-- 开/关“允许自助注册”。
+- 开/关“允许自助注册”；
+- **批量创号**：填数量（1–200）和可选起始 ID，账号名 = 8 位数字 ID、密码默认 = 同一个 ID
+  （纯数字 8 位正好满足密码下限）。明文密码只在那一次响应里出现，库里只有 bcrypt 哈希；
+  面板会把结果列出来并可 **导出 CSV**（账号,密码），刷新页面就再也拿不到明文；
+- **工程管理**：列出所有账号的工程与会话数、给任意账号新建工程。
+
+批量创号每个账号要算一次 bcrypt（cost 12，约 0.3 秒/个），200 个大约一分钟，
+按钮会一直置灰到请求返回；超时上限受 NGINX `proxy_read_timeout` 约束，别一次拉太满。
 
 两个保护：不能禁用/删除自己；系统至少保留一个启用的管理员。
 
@@ -180,7 +211,7 @@ data/20260101013030/114.json    ← 该图的标注
 
 ## 标签集：导入 / 导出 / 跨端复用
 
-标签集是**项目级**的，落在 `data/labels.txt`（UTF-8，每行一个标签）：
+标签集是**工程级**的，落在 `data/<用户名>/<工程名>/labels.txt`（UTF-8，每行一个标签）：
 
 - 界面位置：右侧「标签列表」标题栏的 **编辑…** → 弹窗里有 **导入…** / **导出 labels.txt**；
 - 导入支持 `.txt` 和 `.json`：
@@ -193,13 +224,14 @@ data/20260101013030/114.json    ← 该图的标注
 - 桌面版 labelme 可以直接复用同一份标签：
 
 ```bash
-labelme data/20260101013030 --labels data/labels.txt
+labelme data/<用户名>/<工程名>/20260101013030 --labels data/<用户名>/<工程名>/labels.txt
 ```
 
-> 注意：`data/labels.txt` 在 `data/` 里，所以清空 `data/` 会连同标签集一起清掉——
+> 注意：标签集在工程目录里，所以清空 `data/` 会连同标签集一起清掉——
 > 这也意味着「拷走 `data/`」就等于带走全部标注和标签表。
 
-接口：`GET /api/labels`、`PUT /api/labels`（body `{"labels": [...]}`，服务端会去空、去重、截断超长）。
+接口：`GET /api/labels?owner=&project=`、`PUT /api/labels?owner=&project=`
+（body `{"labels": [...]}`，服务端会去空、去重、截断超长）。
 
 ## 端口约定
 
@@ -302,8 +334,11 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 | GET | `/api/admin/settings` | `{allow_registration}` |
 | PUT | `/api/admin/settings` | 开关自助注册 |
 | GET | `/api/admin/overview` | 账号总数 / 启用数 / 管理员数 |
-| POST | `/api/sessions` | 新建会话目录，返回 `{"session":"20260101013030"}` |
-| GET | `/api/sessions` | 会话列表（图像数 / 已标注数 / 创建时间） |
+| POST | `/api/admin/users/batch` | 批量创号 `{count,start?}`，账号名与初始密码都是 8 位数字 ID（仅管理员） |
+| GET | `/api/projects` | 当前账号的工程列表；`?owner=` 指定账号，管理员可用 `?scope=all` 看全部 |
+| POST | `/api/projects` | 新建工程 `{name,owner?}`（普通账号只能建自己的） |
+| POST | `/api/sessions` | 在 `?owner=&project=` 下新建会话目录，返回 `{session,owner,project}` |
+| GET | `/api/sessions` | 会话列表，支持 `?owner=&project=`（普通账号只能看自己的；管理员不传 owner 看全部） |
 | POST | `/api/sessions/{s}/images` | 上传图像，multipart 字段名 `files`，可多文件，重名自动加 `-1` |
 | GET | `/api/sessions/{s}/images` | 会话内图像列表 |
 | GET | `/api/sessions/{s}/raw/{name}` | 取原图 |
@@ -313,8 +348,8 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 | PUT | `/api/sessions/{s}/drafts/{name}` | 写崩溃草稿（`fsync` 落盘），body `{shapes,flags,imageWidth,imageHeight,at}` |
 | GET | `/api/sessions/{s}/drafts/{name}` | 读草稿，附带 `stale`（标注比草稿新则为 true） |
 | DELETE | `/api/sessions/{s}/drafts/{name}` | 删除草稿（保存成功后前端会调用） |
-| GET | `/api/recent` | 最近一次动过的会话/图像，供强杀、蓝屏后接回 |
-| GET | `/api/labels` | 读项目标签集（`data/labels.txt`） |
-| PUT | `/api/labels` | 写项目标签集，body `{"labels":[...]}` |
+| GET | `/api/recent` | 最近一次动过的会话/图像，供强杀、蓝屏后接回；支持 `?owner=` |
+| GET | `/api/labels` | 读**工程级**标签集（`data/<owner>/<project>/labels.txt`），支持 `?owner=&project=` |
+| PUT | `/api/labels` | 写工程标签集，body `{"labels":[...]}`，支持 `?owner=&project=` |
 
 `/api/docs` 有 FastAPI 自带的可交互文档（若不想暴露，可在 NGINX 里单独 `location /api/docs { deny all; }`）。

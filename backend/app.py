@@ -1,14 +1,18 @@
 """labelme-web backend.
 
-Source deployment only (no docker). Serves the static frontend and a small
-JSON/HTTP API. Every browser session owns one timestamped folder under data/:
+Source deployment only (no docker). Serves the static frontend, the annotation
+API, and the account/admin API. Disk layout (one user, one project, one
+browser session per folder):
 
-    data/20260101013030/114.jpg
-    data/20260101013030/114.json
+    data/<username>/<project>/20260101013030/114.jpg
+    data/<username>/<project>/20260101013030/114.json
 
 ``114.json`` is written in labelme 7.11.0's own format, with ``imagePath``
 pointing at the image file in the same folder, so the folder can be copied
 straight into the desktop build and opened as an Annotation Folder.
+
+会话 id（14 位时间戳）→ 真实路径 的映射存在 SQLite 索引里（见 workspace.py），
+老布局 ``data/<时间戳>/`` 会在第一个管理员存在后自动迁移。
 """
 
 from __future__ import annotations
@@ -16,7 +20,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -25,35 +28,21 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, Response, Uploa
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend import auth
+from backend import auth, workspace
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-FRONTEND_DIR = BASE_DIR / "frontend"
 MAX_UPLOAD_MB = int(os.environ.get("LABELME_WEB_MAX_UPLOAD_MB", "200"))
 LABELME_VERSION = "7.11.0"
-LABELS_FILE = DATA_DIR / "labels.txt"
 LABELS_MAX = 500
 LABEL_MAXLEN = 120
+NAME_RE = re.compile(r"^[^\x00/\\]{1,200}$")  # 文件名：不许带路径分隔符
+IMAGE_SUFFIXES = workspace.IMAGE_SUFFIXES
+DRAFT_DIRNAME = workspace.DRAFT_DIRNAME
+DATA_DIR = workspace.DATA_DIR
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp"}
-SESSION_RE = re.compile(r"^\d{14}(_\d+)?$")
-NAME_RE = re.compile(r"^[\w\-. ()\u4e00-\u9fff]+$")
-SESSION_LOCK = threading.Lock()
-DRAFT_DIRNAME = ".drafts"   # 崩溃草稿：data/<session>/.drafts/<图名>.json，不进标注目录
-
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def ensure_data_dir() -> Path:
-    """(Re)create data/ on demand.
-
-    Someone may delete the whole data/ folder while the service is running;
-    every endpoint that touches it repairs the folder first instead of 500ing.
-    """
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    return DATA_DIR
-
+workspace.init(auth.DB_PATH)
+workspace.auto_migrate()
+workspace.rebuild_index()
 
 app = FastAPI(title="labelme-web", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
@@ -64,28 +53,12 @@ app.include_router(auth.admin_router)
 
 
 # ---------------------------------------------------------------- helpers
-def session_dir(session: str) -> Path:
-    ensure_data_dir()
-    if not SESSION_RE.match(session):
-        raise HTTPException(status_code=400, detail="bad session id")
-    path = DATA_DIR / session
-    if not path.is_dir():
-        raise HTTPException(status_code=404, detail="session not found")
-    return path
-
-
 def safe_name(filename: str) -> str:
     name = os.path.basename(filename.replace("\\", "/"))
     name = name.replace("\x00", "").strip()
     if not name or len(name) > 200 or not NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="bad file name: %r" % filename)
     return name
-
-
-def image_files(folder: Path) -> List[Path]:
-    return sorted(
-        p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES
-    )
 
 
 def unique_target(folder: Path, name: str) -> Path:
@@ -133,59 +106,127 @@ def mtime(path: Path) -> float:
         return 0.0
 
 
+def _owner(request: Request, owner: Optional[str] = None) -> str:
+    """普通账号只能用自己的用户名当目录；管理员可以指定别人。"""
+    user = auth.current_user(request)
+    if owner and owner.strip() and owner.strip() != user["username"]:
+        if user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="只能访问自己的工程")
+        try:
+            return workspace.safe_component(owner, "用户名")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return user["username"]
+
+
+def _project(project: Optional[str], owner: str) -> str:
+    try:
+        name = workspace.safe_component(project or workspace.DEFAULT_PROJECT, "工程名")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    workspace.ensure_project(owner, name)
+    return name
+
+
+def _folder(session: str, request: Optional[Request] = None) -> Path:
+    """会话 id → 目录；普通账号拿不到别人的会话（按 404 处理，不泄露存在性）。"""
+    try:
+        owner, project, folder = workspace.session_path(session)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad session id")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="session not found")
+    if request is not None:
+        user = auth.current_user(request)
+        if user["role"] != "admin" and owner != user["username"]:
+            raise HTTPException(status_code=404, detail="session not found")
+    return folder
+
+
+def _session_info(folder: Path) -> Dict[str, str]:
+    return {"session": folder.name, "owner": folder.parent.parent.name, "project": folder.parent.name}
+
+
 # ---------------------------------------------------------------- sessions
 @app.get("/api/health")
 def health() -> Dict[str, str]:
     return {"status": "ok", "labelme": LABELME_VERSION}
 
 
+@app.get("/api/projects")
+def list_projects(request: Request, owner: Optional[str] = None, scope: Optional[str] = None) -> Dict[str, Any]:
+    """当前账号的工程列表；管理员可以用 owner=某人 或 scope=all 看全部。"""
+    workspace.auto_migrate()
+    user = auth.current_user(request)
+    if scope == "all" and user["role"] == "admin":
+        projects = workspace.list_projects(None)
+        return {"projects": projects, "owner": "*"}
+    target = _owner(request, owner)
+    projects = workspace.list_projects(target)
+    if not projects and target == user["username"]:
+        workspace.ensure_project(target, workspace.DEFAULT_PROJECT)  # 新账号给一个默认工程
+        projects = workspace.list_projects(target)
+    return {"projects": projects, "owner": target}
+
+
+@app.post("/api/projects")
+def create_project(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]:
+    owner = _owner(request, payload.get("owner"))
+    name = _project(payload.get("name"), owner)
+    return {"project": {"owner": owner, "name": name}, "owner": owner}
+
+
 @app.post("/api/sessions")
-def create_session() -> Dict[str, Any]:
-    """Create data/<YYYYMMDDHHMMSS>/ for one browser session."""
-    ensure_data_dir()
-    with SESSION_LOCK:
-        while True:
-            stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-            folder = DATA_DIR / stamp
-            if not folder.exists():
-                folder.mkdir(parents=True)
-                return {"session": stamp, "created": datetime.now().isoformat(" ")}
-            index = 2
-            while (DATA_DIR / ("%s_%d" % (stamp, index))).exists():
-                index += 1
-            folder = DATA_DIR / ("%s_%d" % (stamp, index))
-            folder.mkdir(parents=True)
-            return {"session": folder.name, "created": datetime.now().isoformat(" ")}
+def create_session(request: Request, owner: Optional[str] = None, project: Optional[str] = None) -> Dict[str, Any]:
+    """在当前工程下新建 data/<用户名>/<工程>/<YYYYMMDDHHMMSS>/。"""
+    workspace.auto_migrate()
+    target_owner = _owner(request, owner)
+    target_project = _project(project, target_owner)
+    return workspace.create_session(target_owner, target_project)
 
 
 @app.get("/api/sessions")
-def list_sessions() -> List[Dict[str, Any]]:
-    ensure_data_dir()
-    items: List[Dict[str, Any]] = []
-    for folder in sorted(DATA_DIR.iterdir(), reverse=True):
-        if not folder.is_dir() or not SESSION_RE.match(folder.name):
-            continue
-        images = image_files(folder)
-        annotated = sum(1 for p in images if (folder / (p.name + ".json")).is_file())
-        items.append(
-            {
-                "session": folder.name,
-                "images": len(images),
-                "annotated": annotated,
-                "created": datetime.fromtimestamp(folder.stat().st_mtime)
-                .isoformat(" ", timespec="seconds"),
-            }
-        )
-    return items
+def list_sessions(request: Request, owner: Optional[str] = None, project: Optional[str] = None) -> Dict[str, Any]:
+    workspace.auto_migrate()
+    user = auth.current_user(request)
+    if owner:
+        target_owner: Optional[str] = _owner(request, owner)
+    elif user["role"] == "admin":
+        target_owner = None
+    else:
+        target_owner = user["username"]
+    target_project: Optional[str] = None
+    if project:
+        try:
+            target_project = workspace.safe_component(project, "工程名")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    items = workspace.list_sessions(target_owner, target_project)
+    return {"sessions": items}
+
+
+@app.get("/api/recent")
+def recent_session(
+    request: Request, owner: Optional[str] = None, project: Optional[str] = None
+) -> Dict[str, Any]:
+    workspace.auto_migrate()
+    target_project: Optional[str] = None
+    if project:
+        try:
+            target_project = workspace.safe_component(project, "工程名")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    found = workspace.recent(_owner(request, owner), target_project)
+    if not found:
+        raise HTTPException(status_code=404, detail="no session yet")
+    return found
 
 
 # ---------------------------------------------------------------- images
 @app.post("/api/sessions/{session}/images")
-async def upload_images(
-    session: str, files: List[UploadFile] = File(...)
-) -> Dict[str, Any]:
+async def upload_images(session: str, request: Request, files: List[UploadFile] = File(...)) -> Dict[str, Any]:
     """Store original images (jpg/png/...) next to their future .json."""
-    folder = session_dir(session)
+    folder = _folder(session, request)
     limit = MAX_UPLOAD_MB * 1024 * 1024
     saved: List[str] = []
     for upload in files:
@@ -198,26 +239,27 @@ async def upload_images(
         target = unique_target(folder, name)
         target.write_bytes(data)
         saved.append(target.name)
-    return {"session": session, "saved": saved}
+    info = _session_info(folder)
+    return {"session": session, "saved": saved, **info}
 
 
 @app.get("/api/sessions/{session}/images")
-def list_images(session: str) -> Dict[str, Any]:
-    folder = session_dir(session)
+def list_images(session: str, request: Request) -> Dict[str, Any]:
+    folder = _folder(session, request)
     items = [
         {
             "name": path.name,
             "size": path.stat().st_size,
             "annotated": (folder / (path.name + ".json")).is_file(),
         }
-        for path in image_files(folder)
+        for path in workspace.image_files(folder)
     ]
-    return {"session": session, "images": items}
+    return {"session": session, "images": items, **_session_info(folder)}
 
 
 @app.get("/api/sessions/{session}/raw/{name}")
-def get_image(session: str, name: str) -> FileResponse:
-    folder = session_dir(session)
+def get_image(session: str, name: str, request: Request) -> FileResponse:
+    folder = _folder(session, request)
     name = safe_name(name)
     path = folder / name
     if not path.is_file():
@@ -226,9 +268,9 @@ def get_image(session: str, name: str) -> FileResponse:
 
 
 @app.delete("/api/sessions/{session}/images/{name}")
-def delete_image(session: str, name: str) -> Dict[str, str]:
+def delete_image(session: str, name: str, request: Request) -> Dict[str, str]:
     """labelme's "Delete File": removes the image, its annotation and its draft."""
-    folder = session_dir(session)
+    folder = _folder(session, request)
     name = safe_name(name)
     for path in (folder / name, folder / (name + ".json"), draft_path(folder, name)):
         if path.is_file():
@@ -238,8 +280,8 @@ def delete_image(session: str, name: str) -> Dict[str, str]:
 
 # ---------------------------------------------------------------- annotation json
 @app.get("/api/sessions/{session}/annotations/{name}")
-def get_annotation(session: str, name: str) -> JSONResponse:
-    folder = session_dir(session)
+def get_annotation(session: str, name: str, request: Request) -> JSONResponse:
+    folder = _folder(session, request)
     name = safe_name(name)
     path = folder / (name + ".json")
     if not path.is_file():
@@ -249,10 +291,10 @@ def get_annotation(session: str, name: str) -> JSONResponse:
 
 @app.put("/api/sessions/{session}/annotations/{name}")
 def put_annotation(
-    session: str, name: str, payload: Dict[str, Any] = Body(...)
+    session: str, name: str, request: Request, payload: Dict[str, Any] = Body(...)
 ) -> Dict[str, Any]:
     """Write the annotation file, keeping imagePath in sync with the folder."""
-    folder = session_dir(session)
+    folder = _folder(session, request)
     name = safe_name(name)
     image_path = folder / name
     if not image_path.is_file():
@@ -281,15 +323,15 @@ def put_annotation(
 # ---------------------------------------------------------------- crash drafts
 @app.put("/api/sessions/{session}/drafts/{name}")
 def put_draft(
-    session: str, name: str, payload: Dict[str, Any] = Body(...)
+    session: str, name: str, request: Request, payload: Dict[str, Any] = Body(...)
 ) -> Dict[str, Any]:
     """保存编辑中的草稿。
 
     浏览器崩溃 / 强杀 / 蓝屏时，localStorage 不一定能落盘（实测硬杀进程后
-    localStorage 直接丢），所以草稿必须同时写进服务器：data/<session>/.drafts/。
+    localStorage 直接丢），所以草稿必须同时写进服务器：<会话目录>/.drafts/。
     文件名与图像同名，带 .json 后缀，正常保存标注后前端会删掉它。
     """
-    folder = session_dir(session)
+    folder = _folder(session, request)
     name = safe_name(name)
     shapes = payload.get("shapes")
     if not isinstance(shapes, list):
@@ -307,9 +349,9 @@ def put_draft(
 
 
 @app.get("/api/sessions/{session}/drafts/{name}")
-def get_draft(session: str, name: str) -> Dict[str, Any]:
+def get_draft(session: str, name: str, request: Request) -> Dict[str, Any]:
     """读草稿，并顺带给出“草稿是否比已保存的标注更新”，前端据此决定是否恢复。"""
-    folder = session_dir(session)
+    folder = _folder(session, request)
     name = safe_name(name)
     path = draft_path(folder, name)
     if not path.is_file():
@@ -325,55 +367,13 @@ def get_draft(session: str, name: str) -> Dict[str, Any]:
 
 
 @app.delete("/api/sessions/{session}/drafts/{name}")
-def delete_draft(session: str, name: str) -> Dict[str, str]:
-    folder = session_dir(session)
+def delete_draft(session: str, name: str, request: Request) -> Dict[str, str]:
+    folder = _folder(session, request)
     name = safe_name(name)
     path = draft_path(folder, name)
     if path.is_file():
         path.unlink()
     return {"deleted": name}
-
-
-@app.get("/api/recent")
-def recent_session() -> Dict[str, Any]:
-    """最近一次动过的会话与图像，供浏览器被强杀后（localStorage 丢了）重新接上。"""
-    ensure_data_dir()
-    best: Optional[tuple] = None
-    for folder in DATA_DIR.iterdir():
-        if not folder.is_dir() or not SESSION_RE.match(folder.name):
-            continue
-        latest = mtime(folder)
-        image: Optional[str] = None
-        group: Optional[str] = None
-        for path in folder.glob("*.json"):
-            if path.name.endswith(".json") and path.is_file():
-                them = mtime(path)
-                if them >= latest:
-                    latest, image, group = them, path.name[:-5], "annotation"
-        drafts = folder / DRAFT_DIRNAME
-        if drafts.is_dir():
-            for path in drafts.glob("*.json"):
-                them = mtime(path)
-                if them >= latest:
-                    latest, image, group = them, path.name[:-5], "draft"
-        for path in image_files(folder):
-            them = mtime(path)
-            if them > latest:
-                latest, image, group = them, path.name, "image"
-        if best is None or latest > best[0]:
-            best = (latest, folder.name, image, group)
-
-    if best is None:
-        raise HTTPException(status_code=404, detail="no session yet")
-    latest, session, image, group = best
-    has_draft = bool(image) and draft_path(DATA_DIR / session, image).is_file()
-    return {
-        "session": session,
-        "image": image,
-        "source": group,
-        "hasDraft": has_draft,
-        "at": datetime.fromtimestamp(latest).isoformat(" ", timespec="seconds"),
-    }
 
 
 # ---------------------------------------------------------------- label set
@@ -393,39 +393,57 @@ def _normalize_labels(items: List[str]) -> List[str]:
     return out
 
 
-def read_labels() -> List[str]:
-    ensure_data_dir()
-    if not LABELS_FILE.is_file():
+def read_labels(path: Path) -> List[str]:
+    if not path.is_file():
         return []
-    text = LABELS_FILE.read_text(encoding="utf-8", errors="replace")
+    text = path.read_text(encoding="utf-8", errors="replace")
     return _normalize_labels([line for line in text.splitlines()])
 
 
-def write_labels(labels: List[str]) -> None:
-    ensure_data_dir()
+def write_labels(path: Path, labels: List[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     body = "\n".join(labels)
     if body:
         body += "\n"
-    tmp = LABELS_FILE.with_suffix(".txt.tmp")
+    tmp = path.with_suffix(".txt.tmp")
     tmp.write_text(body, encoding="utf-8")
-    os.replace(tmp, LABELS_FILE)
+    os.replace(tmp, path)
 
 
 @app.get("/api/labels")
-def get_labels() -> Dict[str, Any]:
-    """项目级标签集，落在 data/labels.txt（每行一个），桌面版可 --labels 直接复用。"""
-    labels = read_labels()
-    return {"labels": labels, "count": len(labels), "path": "data/labels.txt"}
+def get_labels(request: Request, owner: Optional[str] = None, project: Optional[str] = None) -> Dict[str, Any]:
+    """工程级标签集，落在 data/<用户名>/<工程>/labels.txt（每行一个）。"""
+    target_owner = _owner(request, owner)
+    target_project = _project(project, target_owner)
+    path = workspace.labels_path(target_owner, target_project)
+    labels = read_labels(path)
+    return {
+        "labels": labels,
+        "count": len(labels),
+        "owner": target_owner,
+        "project": target_project,
+        "path": f"data/{target_owner}/{target_project}/labels.txt",
+    }
 
 
 @app.put("/api/labels")
-def put_labels(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+def put_labels(
+    request: Request, payload: Dict[str, Any], owner: Optional[str] = None, project: Optional[str] = None
+) -> Dict[str, Any]:
     items = payload.get("labels")
     if not isinstance(items, list):
         raise HTTPException(status_code=400, detail="labels must be a list of strings")
+    target_owner = _owner(request, owner)
+    target_project = _project(project, target_owner)
     labels = _normalize_labels(items)
-    write_labels(labels)
-    return {"labels": labels, "count": len(labels), "path": "data/labels.txt"}
+    write_labels(workspace.labels_path(target_owner, target_project), labels)
+    return {
+        "labels": labels,
+        "count": len(labels),
+        "owner": target_owner,
+        "project": target_project,
+        "path": f"data/{target_owner}/{target_project}/labels.txt",
+    }
 
 
 # ---------------------------------------------------------------- pages

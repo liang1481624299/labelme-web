@@ -9,6 +9,7 @@ const VERSION = '7.11.0';
 const STORE_SESSION = 'labelme.web.session';
 const STORE_LABELS = 'labelme.web.labels';
 const STORE_LAST = 'labelme.web.lastSession';
+const STORE_PROJECT = 'labelme.web.project';   // {owner, project}
 const DRAFT_PREFIX = 'labelme.web.draft.';
 const LIVE_CHANNEL = 'labelme-web-live';
 const LAST_SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7; // 7 天内都愿意接上
@@ -86,6 +87,10 @@ function toast(msg, isError) {
 /* ------------------------------------------------------------------- state */
 const state = {
   sessionId: null,
+  owner: null,          // 当前工程所属账号（普通账号 = 自己）
+  project: null,        // 当前工程名
+  projects: [],         // 当前账号可见的工程
+  user: null,
   images: [],           // [{name,size,annotated}]
   index: -1,
   image: null,          // {name,w,h,img,canvas}
@@ -682,7 +687,7 @@ function addLabel(label) {
 
 let labelsTimer = null;
 
-/** 标签集是项目级的，存服务端 data/labels.txt（每行一个），浏览器只留一份缓存。 */
+/** 标签集是工程级的，存服务端 data/<用户名>/<工程>/labels.txt（每行一个）。 */
 function saveLabels() {
   try {
     localStorage.setItem(STORE_LABELS, JSON.stringify(state.labels));
@@ -693,7 +698,7 @@ function saveLabels() {
 
 async function pushLabels() {
   try {
-    await req('PUT', '/api/labels', { labels: state.labels });
+    await req('PUT', '/api/labels' + projectQuery(), { labels: state.labels });
   } catch (e) {
     toast(`标签集保存失败：${e.message}`, true);
   }
@@ -710,7 +715,7 @@ async function loadLabels() {
   } catch (e) { /* ignore */ }
   // 服务端为准
   try {
-    const res = await req('GET', '/api/labels');
+    const res = await req('GET', '/api/labels' + projectQuery());
     if (res && Array.isArray(res.labels)) state.labels = res.labels;
   } catch (e) { /* 后端没起来时继续用缓存 */ }
   refreshLabelList();
@@ -1223,7 +1228,8 @@ function draftKey(session, name) {
 /** 服务器侧的“最近一次动过的会话”：localStorage 被硬杀弄丢后的唯一线索。 */
 async function fetchRecent() {
   try {
-    return await req('GET', '/api/recent');
+    const q = projectQuery();
+    return await req('GET', '/api/recent' + q);
   } catch (e) {
     return null;
   }
@@ -1371,6 +1377,131 @@ function initLiveChannel() {
   } catch (e) { /* ignore */ }
 }
 
+/* --------------------------------------------------------------- projects */
+function readProjectPref() {
+  try {
+    const obj = JSON.parse(localStorage.getItem(STORE_PROJECT) || 'null');
+    return obj && obj.project ? obj : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function rememberProject() {
+  try {
+    localStorage.setItem(STORE_PROJECT, JSON.stringify({ owner: state.owner, project: state.project }));
+  } catch (e) { /* ignore */ }
+}
+
+function projectQuery() {
+  const p = new URLSearchParams();
+  if (state.owner) p.set('owner', state.owner);
+  if (state.project) p.set('project', state.project);
+  const s = p.toString();
+  return s ? `?${s}` : '';
+}
+
+function projectLabel() {
+  return `${state.owner || '—'} / ${state.project || '—'}`;
+}
+
+/** 登录后先定工程：服务器给的列表里，优先沿用上次那个工程。 */
+async function initProjects() {
+  const pref = readProjectPref();
+  const res = await req('GET', '/api/projects');
+  state.owner = res.owner;
+  state.projects = res.projects || [];
+  const match = pref && state.projects.find((p) => p.owner === state.owner && p.name === pref.project);
+  state.project = match ? match.project : (state.projects[0] && state.projects[0].name) || '默认工程';
+  if (!state.projects.some((p) => p.name === state.project)) {
+    await req('POST', '/api/projects', { name: state.project });
+    state.projects = (await req('GET', '/api/projects')).projects || [];
+  }
+  rememberProject();
+  const sp = $('statusProject');
+  if (sp) sp.textContent = projectLabel();
+}
+
+/** 切换工程：先保存当前图，再换标签集、换会话。 */
+async function switchProject(name) {
+  const target = String(name || '').trim();
+  if (!target || target === state.project) return;
+  try {
+    if (state.dirty && state.image) await saveNow(true);
+  } catch (e) { /* 保存失败也照常切，草稿在服务器上 */ }
+  state.project = target;
+  state.projects = (await req('GET', '/api/projects')).projects || state.projects;
+  rememberProject();
+  const sp = $('statusProject');
+  if (sp) sp.textContent = projectLabel();
+  state.sessionId = null;
+  sessionStorage.removeItem(STORE_SESSION);
+  resetSessionState();
+  await loadLabels();
+  const sessions = await listSessions();
+  if (sessions.length) {
+    await loadSession(sessions[0].session, null);
+  } else {
+    await newSession();
+  }
+  updateStatus();
+  toast(`已切换到工程「${target}」`);
+}
+
+async function createProject(name) {
+  const clean = String(name || '').trim();
+  if (!clean) throw new Error('工程名不能为空');
+  const res = await req('POST', '/api/projects', { name: clean });
+  state.projects = (await req('GET', '/api/projects')).projects || [];
+  await switchProject(res.project ? res.project.name : clean);
+}
+
+function openProjectModal() {
+  const modal = $('projectModal');
+  if (!modal) return;
+  modal.hidden = false;
+  const box = $('projectList');
+  box.innerHTML = '<div class="empty-list">加载中…</div>';
+  req('GET', '/api/projects').then((res) => {
+    state.projects = res.projects || [];
+    if (!state.projects.length) {
+      box.innerHTML = '<div class="empty-list">还没有工程，下面新建一个</div>';
+      return;
+    }
+    box.innerHTML = '';
+    state.projects.forEach((p) => {
+      const row = document.createElement('div');
+      row.className = 'row' + (p.name === state.project ? ' selected' : '');
+      row.innerHTML = `<span class="name"></span><span class="meta">${p.sessions} 会话 · ${p.created_at}</span>`;
+      row.querySelector('.name').textContent = p.name;
+      row.addEventListener('click', async () => {
+        modal.hidden = true;
+        try {
+          await switchProject(p.name);
+        } catch (e) {
+          toast(e.message, true);
+        }
+      });
+      box.appendChild(row);
+    });
+  }).catch((e) => {
+    box.innerHTML = `<div class="empty-list">${e.message}</div>`;
+  });
+  const input = $('newProjectName');
+  if (input) input.value = '';
+}
+
+async function submitProjectModal() {
+  const input = $('newProjectName');
+  if (!input || !input.value.trim()) return;
+  try {
+    $('projectModal').hidden = true;
+    await createProject(input.value.trim());
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 /* --------------------------------------------------------------- sessions */
 function resetSessionState() {
   cancelDraftTimers();
@@ -1387,7 +1518,7 @@ function resetSessionState() {
 }
 
 async function newSession(reason) {
-  const res = await req('POST', '/api/sessions');
+  const res = await req('POST', '/api/sessions' + projectQuery());
   state.sessionId = res.session;
   sessionStorage.setItem(STORE_SESSION, res.session);
   resetSessionState();
@@ -1441,6 +1572,15 @@ async function loadSession(id, preferredImage) {
   state.image = null;
   const res = await req('GET', `/api/sessions/${id}/images`);
   state.images = res.images || [];
+  if (res.owner && res.project && (res.owner !== state.owner || res.project !== state.project)) {
+    // 从 URL / 别的入口进到另一个工程的会话时，把当前工程同步过来
+    state.owner = res.owner;
+    state.project = res.project;
+    rememberProject();
+    const sp = $('statusProject');
+    if (sp) sp.textContent = projectLabel();
+    await loadLabels();
+  }
   rememberSession(preferredImage);
   refreshImageList();
   updateStatus();
@@ -1455,7 +1595,7 @@ async function loadSession(id, preferredImage) {
 }
 
 async function listSessions() {
-  return await req('GET', '/api/sessions');
+  return await req('GET', '/api/sessions' + projectQuery());
 }
 
 async function uploadFiles(files) {
@@ -1668,6 +1808,8 @@ const MENUS = [
       { id: 'openFile', label: '打开文件(O)…', sc: 'Ctrl+O' },
       { id: 'upload', label: '打开文件夹…', sc: 'Ctrl+Shift+O' },
       { id: 'sessions', label: '切换会话…' },
+      { id: 'projects', label: '切换工程…' },
+      { id: 'newProject', label: '新建工程…' },
       { id: 'newSession', label: '新建会话…' },
       { sep: true },
       { id: 'save', label: '保存(S)', sc: 'Ctrl+S' },
@@ -1895,6 +2037,16 @@ function runAction(id) {
       break;
     case 'sessions':
       openSessionModal();
+      break;
+    case 'projects':
+      openProjectModal();
+      break;
+    case 'newProject':
+      openProjectModal();
+      setTimeout(() => {
+        const input = $('newProjectName');
+        if (input) input.focus();
+      }, 30);
       break;
     case 'newSession':
       createNewSessionFromMenu();
@@ -2177,7 +2329,7 @@ function bindUi() {
 
   $('btnNewSession').addEventListener('click', async () => {
     try {
-      const res = await req('POST', '/api/sessions');
+      const res = await req('POST', '/api/sessions' + projectQuery());
       $('sessionModal').hidden = true;
       await loadSession(res.session);
       toast(`已新建会话 ${res.session}`);
@@ -2185,6 +2337,17 @@ function bindUi() {
       toast(e.message, true);
     }
   });
+  const btnCreateProject = $('btnCreateProject');
+  if (btnCreateProject) btnCreateProject.addEventListener('click', submitProjectModal);
+  const newProjectName = $('newProjectName');
+  if (newProjectName) {
+    newProjectName.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        submitProjectModal();
+      }
+    });
+  }
 
   $('btnBcOk').addEventListener('click', () => {
     state.brightness = Number($('brightness').value);
@@ -2317,10 +2480,18 @@ async function reloadImageCanvas() {
 async function boot() {
   try {
     const meRes = await req('GET', '/api/auth/me');
-    const su = $('statusUser');
-    if (su && meRes && meRes.user) su.textContent = meRes.user.username;
+    if (meRes && meRes.user) {
+      state.user = meRes.user;
+      const su = $('statusUser');
+      if (su) su.textContent = meRes.user.username;
+    }
   } catch (e) {
     if (e.status === 401) return; // 正在跳登录页
+  }
+  try {
+    await initProjects();
+  } catch (e) {
+    toast(`工程初始化失败：${e.message}`, true);
   }
   await loadLabels();
   buildMenubar();

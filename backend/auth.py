@@ -321,6 +321,12 @@ def register(request: Request, payload: Dict[str, Any]) -> JSONResponse:
             user_id = cur.lastrowid
             conn.commit()
     token = issue_session(user_id)
+    if role == "admin":
+        try:  # 第一个管理员出现后，把老 data/<时间戳>/ 会话收进 用户名/默认工程
+            from backend import workspace
+            workspace.auto_migrate()
+        except Exception:
+            pass
     response = JSONResponse(
         {"user": user_row_to_dict(find_user_by_id(user_id)), "first_admin": role == "admin"},
         status_code=201,
@@ -386,6 +392,80 @@ def admin_create_user(
             conn.commit()
             new_id = cur.lastrowid
     return {"user": user_row_to_dict(find_user_by_id(new_id))}
+
+
+BATCH_MAX = 200
+BATCH_START_DEFAULT = 10000001
+
+
+@admin_router.post("/users/batch", status_code=201)
+def admin_batch_create_users(
+    payload: Dict[str, Any], admin: Dict[str, Any] = Depends(admin_guard)
+) -> Dict[str, Any]:
+    """批量建号：账号名 = 8 位数字 ID，密码默认 = 同一个 ID。
+
+    密码只在这一个响应里出现一次（库里存 bcrypt），前端负责导出一份清单。
+    纯数字 8 位正好也满足「密码至少 8 位」，所以不用额外放宽策略。
+    """
+    try:
+        count = int(payload.get("count") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="数量必须是整数")
+    if count < 1 or count > BATCH_MAX:
+        raise HTTPException(status_code=400, detail=f"一次只能建 1–{BATCH_MAX} 个")
+
+    start_raw = payload.get("start")
+    explicit_start: Optional[int] = None
+    if start_raw not in (None, ""):
+        try:
+            explicit_start = int(start_raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="起始 ID 必须是 8 位数字")
+        if explicit_start < 10000000 or explicit_start > 99999999:
+            raise HTTPException(status_code=400, detail="起始 ID 必须是 8 位数字（10000000–99999999）")
+
+    created: List[Dict[str, Any]] = []
+    with _LOCK:
+        with connect() as conn:
+            taken = {
+                row["username"]
+                for row in conn.execute("SELECT username FROM users").fetchall()
+            }
+            numeric = [int(name) for name in taken if name.isdigit() and len(name) == 8]
+            cursor = explicit_start if explicit_start is not None else (
+                max(numeric) + 1 if numeric else BATCH_START_DEFAULT
+            )
+            if cursor > 99999999:
+                raise HTTPException(status_code=400, detail="8 位数字 ID 已经用完了")
+
+            for _ in range(count):
+                while cursor <= 99999999 and str(cursor) in taken:
+                    cursor += 1
+                if cursor > 99999999:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"8 位数字 ID 已用完，本次只建了 {len(created)} 个",
+                    )
+                username = str(cursor)
+                password = username
+                validate_username(username)
+                validate_password(password)
+                conn.execute(
+                    "INSERT INTO users(username, password_hash, role, enabled, created_at) "
+                    "VALUES(?,?,?,1,?)",
+                    (username, hash_password(password), "annotator", now_iso()),
+                )
+                conn.commit()
+                taken.add(username)
+                created.append({"id": username, "username": username, "password": password})
+                cursor += 1
+
+    return {
+        "created": created,
+        "count": len(created),
+        "first": created[0]["username"] if created else None,
+        "last": created[-1]["username"] if created else None,
+    }
 
 
 def _drop_sessions_conn(conn: sqlite3.Connection, user_id: int, keep: Optional[str] = None) -> None:
