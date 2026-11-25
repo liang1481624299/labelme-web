@@ -685,7 +685,7 @@ function finishDrawing() {
     const shape = {
       label,
       points: pts.map((p) => [p[0], p[1]]),
-      group_id: (meta && meta.group_id) || null,
+      group_id: meta && meta.group_id != null ? meta.group_id : null,
       description: (meta && meta.description) || '',
       shape_type: storedType,
       flags: {},
@@ -1427,7 +1427,7 @@ function editSelectedLabel() {
     commit(() => {
       const s = state.shapes[idx];
       s.label = label;
-      s.group_id = (meta && meta.group_id) || null;
+      s.group_id = meta && meta.group_id != null ? meta.group_id : null;
       s.description = (meta && meta.description) || '';
     });
     addLabel(label);
