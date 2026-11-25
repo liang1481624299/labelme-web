@@ -88,6 +88,10 @@
     <div class="modal-body">
       <input id="labelInput" type="text" autocomplete="off" placeholder="标签名（输入或从下拉选择）" list="labelDatalist" />
       <datalist id="labelDatalist"></datalist>
+      <div class="label-meta">
+        <input id="labelGroup" type="number" min="0" step="1" placeholder="Group ID（可留空）" />
+        <textarea id="labelDesc" rows="2" placeholder="描述（可留空）"></textarea>
+      </div>
       <div class="recent" id="recentLabels"></div>
     </div>
     <footer>

@@ -310,9 +310,11 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 
 - 布局：菜单栏 / 工具栏 / 左侧竖排工具条 / 右侧「标签列表 · 形状列表 · 图像列表」三个 dock / 底部状态栏
 - 形状：`polygon`、`rectangle`、`oriented_rectangle`、`circle`、三点画圆（存成两点 `circle`）、`point`、`line`、`linestrip`
-- 编辑：选中、拖动整体、拖顶点、复制（Ctrl+D）、删除、修改标签、撤销/重做（快照栈）
-- 视图：滚轮缩放、适合窗口（Ctrl+F）、原始大小（Ctrl+0）、亮度/对比度、中键/Alt 拖拽平移
-- 文件：上传图像、多图列表、上一张/下一张、自动保存（停手 0.8 s 落盘）、手动保存、另存为 JSON、删除图像
+- 编辑：选中、拖动整体、拖顶点、复制/粘贴/副本（Ctrl+C/V/D）、删除、修改标签与 Group ID/描述、锁定、隐藏/显示、删除顶点、边上加点、转换形状类型、方向选择、撤销/重做（快照栈）
+- 多边形手势：单击加点、点回起点闭合、双击闭合、Enter/Space 闭合、Backspace/Ctrl+Z 撤销当前点
+- 视图：滚轮缩放、适合窗口（Ctrl+F）、适合选中（Ctrl+Shift+F）、原始大小（Ctrl+0）、亮度/对比度、中键/Alt 拖拽平移
+- 文件：上传图像、多图列表、上一张/下一张、自动保存（停手 0.8 s 落盘）、手动保存、另存为 JSON、关闭图像（可保留上一张标注与缩放）、删除标注文件、删除图像
+- 快捷键：Ctrl+O/U/S/Shift+S/W、Delete/Ctrl+Delete、A/D 切图、Ctrl+N 多边形、Ctrl+R 矩形、Ctrl+E 改标签、Ctrl+Shift+L 锁定、T 切换显示、Ctrl+F/Ctrl+Shift+F 适合窗口/选中、Ctrl+0 原始大小、Ctrl+↑/↓/←/→ 选邻近形状
 - 快捷键：Ctrl+O / Ctrl+S / Ctrl+Z / Ctrl+Y / Ctrl+D / Ctrl+N / Ctrl+R / Delete / A、D / Enter / Esc
 
 **未对标**：`AI-Segment`、`AI-Find All`、SAM 模型下拉。这几项依赖服务端 SAM 权重与 GPU，
@@ -345,6 +347,7 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 | DELETE | `/api/sessions/{s}/images/{name}` | 删除图像及其同名 `.json` |
 | GET | `/api/sessions/{s}/annotations/{name}` | 读标注（无则 404） |
 | PUT | `/api/sessions/{s}/annotations/{name}` | 写标注，原子替换，强制 `imagePath=name` |
+| DELETE | `/api/sessions/{s}/annotations/{name}` | 删除标注 JSON 与草稿，保留图像 |
 | PUT | `/api/sessions/{s}/drafts/{name}` | 写崩溃草稿（`fsync` 落盘），body `{shapes,flags,imageWidth,imageHeight,at}` |
 | GET | `/api/sessions/{s}/drafts/{name}` | 读草稿，附带 `stale`（标注比草稿新则为 true） |
 | DELETE | `/api/sessions/{s}/drafts/{name}` | 删除草稿（保存成功后前端会调用） |

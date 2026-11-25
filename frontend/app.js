@@ -96,9 +96,16 @@ const state = {
   image: null,          // {name,w,h,img,canvas}
   shapes: [],
   selected: -1,
+  selectedVertex: -1,
   tool: 'select',
   labels: [],
   flags: {},
+  hideShapes: false,
+  fillDrawing: true,
+  clipboard: null,
+  hover: null,
+  keepPrev: false,
+  keepZoom: false,
   brightness: 0,
   contrast: 0,
   zoom: 1,
@@ -224,7 +231,9 @@ function redraw() {
     ctx.lineWidth = 1;
   ctx.strokeRect(view.tx - 0.5, view.ty - 0.5, iw + 1, ih + 1);
 
-  state.shapes.forEach((shape, i) => drawShape(shape, i, i === state.selected));
+  if (!state.hideShapes) {
+    state.shapes.forEach((shape, i) => drawShape(shape, i, i === state.selected));
+  }
   drawPending();
 
   if (state.drag && state.drag.mode === 'move') {
@@ -301,12 +310,15 @@ function drawShape(shape, index, selected) {
     ctx.fillStyle = '#ffffff';
     ctx.strokeStyle = 'rgba(0,0,0,.6)';
     ctx.lineWidth = 1;
-    for (const p of pts) {
+    pts.forEach((p, i) => {
+      const isVertex = i === state.selectedVertex;
+      const r = isVertex ? 6 : 4;
       ctx.beginPath();
-      ctx.rect(p[0] - 4, p[1] - 4, 8, 8);
+      ctx.rect(p[0] - r, p[1] - r, r * 2, r * 2);
+      ctx.fillStyle = isVertex ? '#ffd23f' : '#ffffff';
       ctx.fill();
       ctx.stroke();
-    }
+    });
   }
 }
 
@@ -327,6 +339,10 @@ function drawPending() {
     const a = pts[0];
     const b = pts[pts.length - 1];
     ctx.rect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+    if (state.fillDrawing) {
+      ctx.fillStyle = 'rgba(255, 205, 70, .16)';
+      ctx.fill();
+    }
     ctx.stroke();
   } else if (type === 'circle') {
     const c = pts[0];
@@ -355,6 +371,11 @@ function drawPending() {
     ctx.stroke();
   } else {
     pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p[0], p[1]) : ctx.lineTo(p[0], p[1])));
+    if (state.fillDrawing && (type === 'polygon' || type === 'oriented_rectangle') && pts.length >= 3) {
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255, 205, 70, .16)';
+      ctx.fill();
+    }
     ctx.stroke();
   }
 
@@ -435,6 +456,7 @@ function shapeHit(shape, pt) {
 }
 
 function hitTestShape(pt) {
+  if (state.hideShapes) return -1;
   const p = Array.isArray(pt) ? pt : [pt.x, pt.y];
   for (let i = state.shapes.length - 1; i >= 0; i--) {
     if (shapeHit(state.shapes[i], p)) return i;
@@ -489,6 +511,7 @@ function undo() {
   state.redo.push(snapshot());
   state.shapes = JSON.parse(state.undo.pop());
   state.selected = -1;
+  state.selectedVertex = -1;
   state.dirty = true;
   scheduleDraft();
   redraw();
@@ -505,6 +528,7 @@ function redo() {
   state.undo.push(snapshot());
   state.shapes = JSON.parse(state.redo.pop());
   state.selected = -1;
+  state.selectedVertex = -1;
   state.dirty = true;
   scheduleDraft();
   redraw();
@@ -598,12 +622,25 @@ function startDrawing(type) {
   setTool(type === 'circle3' ? 'circle3' : type);
 }
 
+function dropDuplicateTail(d) {
+  if (!d || d.points.length < 2) return;
+  const last = d.points[d.points.length - 1];
+  const prev = d.points[d.points.length - 2];
+  if (dist2(last, prev) <= Math.pow(4 / view.zoom, 2)) d.points.pop();
+}
+
 function finishDrawing() {
   const d = state.drawing;
   if (!d) return;
   const storedType = d.type === 'circle3' ? 'circle' : d.type;
   const need = MIN_POINTS[storedType] || 1;
   let pts = d.points.slice();
+  // 双击结束可能留下两个重合的末点；只保留一个
+  if (pts.length >= 3) {
+    const last = pts[pts.length - 1];
+    const prev = pts[pts.length - 2];
+    if (dist2(last, prev) <= 1 / view.zoom) pts.pop();
+  }
   if ((d.type === 'rectangle' || d.type === 'line') && pts.length === 1 && d.cursor) {
     pts.push(d.cursor);
   }
@@ -640,7 +677,7 @@ function finishDrawing() {
   }
 
   state.drawing = null;
-  const finish = (label) => {
+  const finish = (label, meta) => {
     if (label === null) {
       redraw();
       return;
@@ -648,8 +685,8 @@ function finishDrawing() {
     const shape = {
       label,
       points: pts.map((p) => [p[0], p[1]]),
-      group_id: null,
-      description: '',
+      group_id: (meta && meta.group_id) || null,
+      description: (meta && meta.description) || '',
       shape_type: storedType,
       flags: {},
       mask: null,
@@ -669,6 +706,19 @@ function cancelDrawing() {
   state.drawing = null;
   redraw();
   return true;
+}
+
+function undoLastPoint() {
+  const d = state.drawing;
+  if (!d || !d.points.length) {
+    toast('当前没有正在绘制的点');
+    return;
+  }
+  d.points.pop();
+  d.cursor = d.points.length ? d.points[d.points.length - 1] : null;
+  if (!d.points.length) state.drawing = null;
+  redraw();
+  toast('已撤销上一个点');
 }
 
 function lastLabel() {
@@ -816,6 +866,12 @@ canvas.addEventListener('pointerdown', (ev) => {
   const tool = state.tool;
 
   if (isDrawingTool()) {
+    // 双击结束：第二次 pointerdown 不再补点，直接用已有点位闭合
+    if (ev.detail >= 2 && state.drawing && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
+      dropDuplicateTail(state.drawing);
+      finishDrawing();
+      return;
+    }
     handleDrawClick(tool, pt, ev);
     return;
   }
@@ -823,8 +879,13 @@ canvas.addEventListener('pointerdown', (ev) => {
   // select tool
   if (state.selected >= 0) {
     const shape = state.shapes[state.selected];
+    if (shape.locked) {
+      toast('该形状已锁定，按 Ctrl+Shift+L 解锁');
+      return;
+    }
     const v = hitTestVertex(shape, pt);
     if (v >= 0) {
+      state.selectedVertex = v;
       state.drag = {
         mode: 'vertex',
         index: state.selected,
@@ -840,6 +901,7 @@ canvas.addEventListener('pointerdown', (ev) => {
   const hit = hitTestShape(pt);
   if (hit >= 0) {
     state.selected = hit;
+    state.selectedVertex = -1;
     state.drag = {
       mode: 'move',
       index: hit,
@@ -854,6 +916,7 @@ canvas.addEventListener('pointerdown', (ev) => {
   }
 
   state.selected = -1;
+  state.selectedVertex = -1;
   refreshDocks();
   updateStatus();
   redraw();
@@ -861,6 +924,7 @@ canvas.addEventListener('pointerdown', (ev) => {
 
 canvas.addEventListener('pointermove', (ev) => {
   const pt = clientToImage(ev.clientX, ev.clientY);
+  state.hover = [pt.x, pt.y];
   updateCursorPos(pt);
 
   if (state.panning) {
@@ -930,6 +994,9 @@ canvas.addEventListener('pointerup', (ev) => {
 canvas.addEventListener('dblclick', (ev) => {
   ev.preventDefault();
   if (state.drawing && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
+    const d = state.drawing;
+    // 双击的两次 pointerdown 可能各补了一个点；末尾重复点只保留一个
+    dropDuplicateTail(d);
     finishDrawing();
   }
 });
@@ -995,7 +1062,19 @@ function handleDrawClick(tool, pt, ev) {
     return;
   }
 
-  // polygon / linestrip
+  if (tool === 'polygon') {
+    // 回到起点即闭合（桌面 labelme 的默认手势），不再重复添加起点
+    if (d.points.length >= 3 && d.points[0]
+      && dist2(d.points[0], [pt.x, pt.y]) <= Math.pow(8 / view.zoom, 2)) {
+      finishDrawing();
+      return;
+    }
+    d.points.push([pt.x, pt.y]);
+    redraw();
+    return;
+  }
+
+  // linestrip
   d.points.push([pt.x, pt.y]);
   redraw();
 }
@@ -1017,12 +1096,279 @@ function deleteSelectedShape() {
     return;
   }
   const idx = state.selected;
+  if (state.shapes[idx].locked) {
+    toast('该形状已锁定，按 Ctrl+Shift+L 解锁');
+    return;
+  }
   const label = state.shapes[idx].label;
   commit(() => {
     state.shapes.splice(idx, 1);
     state.selected = -1;
+    state.selectedVertex = -1;
   });
   toast(`已删除形状「${label}」，按 Ctrl+Z 可撤销`);
+}
+
+function deleteSelectedPoint() {
+  if (state.selected < 0 || state.selectedVertex < 0) {
+    toast('先选中形状上的一个顶点');
+    return;
+  }
+  const shape = state.shapes[state.selected];
+  if (!['polygon', 'linestrip'].includes(shape.shape_type)) {
+    toast('只有多边形和折线可以删除顶点');
+    return;
+  }
+  if (shape.locked) {
+    toast('该形状已锁定');
+    return;
+  }
+  const min = shape.shape_type === 'polygon' ? 3 : 2;
+  if (shape.points.length <= min) {
+    toast(`至少保留 ${min} 个点`);
+    return;
+  }
+  const vi = state.selectedVertex;
+  commit(() => {
+    shape.points.splice(vi, 1);
+    state.selectedVertex = -1;
+  });
+  toast('已删除顶点');
+}
+
+function projectOnSegment(p, a, b) {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const len2 = dx * dx + dy * dy;
+  if (!len2) return { point: [a[0], a[1]], dist: dist2(p, a) };
+  let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const q = [a[0] + t * dx, a[1] + t * dy];
+  return { point: q, dist: dist2(p, q), t };
+}
+
+function addPointToEdge() {
+  if (state.selected < 0) {
+    toast('先选中一个多边形或折线');
+    return;
+  }
+  const shape = state.shapes[state.selected];
+  if (!['polygon', 'linestrip'].includes(shape.shape_type)) {
+    toast('只有多边形和折线可以加点');
+    return;
+  }
+  if (shape.locked) {
+    toast('该形状已锁定');
+    return;
+  }
+  if (!state.hover) {
+    toast('把鼠标移到要加点的边上');
+    return;
+  }
+  let best = -1;
+  let bestD = Infinity;
+  let bestPoint = null;
+  const n = shape.shape_type === 'polygon' ? shape.points.length : shape.points.length - 1;
+  for (let i = 0; i < n; i++) {
+    const a = shape.points[i];
+    const b = shape.points[(i + 1) % shape.points.length];
+    const pr = projectOnSegment(state.hover, a, b);
+    if (pr.dist < bestD) {
+      bestD = pr.dist;
+      best = i;
+      bestPoint = pr.point;
+    }
+  }
+  if (best < 0 || !bestPoint) {
+    toast('没有可加点的边');
+    return;
+  }
+  if (bestD > Math.pow(18 / view.zoom, 2)) {
+    toast('鼠标离边太远，先靠近要加点的边');
+    return;
+  }
+  commit(() => {
+    shape.points.splice(best + 1, 0, [bestPoint[0], bestPoint[1]]);
+    state.selectedVertex = best + 1;
+  });
+  toast('已在边上插入顶点');
+}
+
+function toggleSelectedLock() {
+  if (state.selected < 0) {
+    toast('没有选中形状');
+    return;
+  }
+  const shape = state.shapes[state.selected];
+  shape.locked = !shape.locked;
+  state.dirty = true;
+  scheduleDraft();
+  scheduleSave();
+  refreshDocks();
+  redraw();
+  toast(shape.locked ? '已锁定形状' : '已解锁形状');
+}
+
+function toggleShapeVisibility() {
+  state.hideShapes = !state.hideShapes;
+  if (state.hideShapes) {
+    state.selected = -1;
+    state.selectedVertex = -1;
+  }
+  refreshDocks();
+  redraw();
+  toast(state.hideShapes ? '已隐藏全部形状' : '已显示全部形状');
+}
+
+function setShapeVisibility(show) {
+  state.hideShapes = !show;
+  if (state.hideShapes) {
+    state.selected = -1;
+    state.selectedVertex = -1;
+  }
+  refreshDocks();
+  redraw();
+}
+
+function shapeCenter(shape) {
+  const xs = shape.points.map((p) => p[0]);
+  const ys = shape.points.map((p) => p[1]);
+  return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+}
+
+function selectNeighbor(direction) {
+  if (!state.shapes.length) return;
+  const anchor = state.selected >= 0 ? shapeCenter(state.shapes[state.selected]) : null;
+  let best = -1;
+  let bestD = Infinity;
+  state.shapes.forEach((shape, i) => {
+    if (i === state.selected) return;
+    const c = shapeCenter(shape);
+    const dx = c[0] - (anchor ? anchor[0] : 0);
+    const dy = c[1] - (anchor ? anchor[1] : 0);
+    const ok = (direction === 'up' && dy < 0)
+      || (direction === 'down' && dy > 0)
+      || (direction === 'left' && dx < 0)
+      || (direction === 'right' && dx > 0);
+    if (!ok) return;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  });
+  if (best < 0) {
+    toast('该方向没有其他形状');
+    return;
+  }
+  state.selected = best;
+  state.selectedVertex = -1;
+  refreshDocks();
+  redraw();
+}
+
+function fitToSelection() {
+  if (state.selected < 0) {
+    toast('先选中一个形状');
+    return;
+  }
+  const shape = state.shapes[state.selected];
+  if (!shape.points.length) return;
+  const xs = shape.points.map((p) => p[0]);
+  const ys = shape.points.map((p) => p[1]);
+  const x0 = Math.min(...xs);
+  const x1 = Math.max(...xs);
+  const y0 = Math.min(...ys);
+  const y1 = Math.max(...ys);
+  const w = Math.max(8, x1 - x0);
+  const h = Math.max(8, y1 - y0);
+  const pad = 40;
+  const vw = wrap.clientWidth;
+  const vh = wrap.clientHeight;
+  view.zoom = clamp(Math.min((vw - pad * 2) / w, (vh - pad * 2) / h), 0.02, 40);
+  view.tx = vw / 2 - (x0 + w / 2) * view.zoom;
+  view.ty = vh / 2 - (y0 + h / 2) * view.zoom;
+  updateZoomLabel();
+  redraw();
+}
+
+function boundingBoxOf(shape) {
+  if (shape.shape_type === 'circle') {
+    const [c, e] = shape.points;
+    const r = Math.hypot(e[0] - c[0], e[1] - c[1]);
+    return [[c[0] - r, c[1] - r], [c[0] + r, c[1] + r]];
+  }
+  const xs = shape.points.map((p) => p[0]);
+  const ys = shape.points.map((p) => p[1]);
+  return [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]];
+}
+
+function circleToPolygon(center, edge, segments = 32) {
+  const r = Math.hypot(edge[0] - center[0], edge[1] - center[1]);
+  const out = [];
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    out.push([center[0] + r * Math.cos(a), center[1] + r * Math.sin(a)]);
+  }
+  return out;
+}
+
+function convertSelectedShape(target) {
+  if (state.selected < 0) {
+    toast('先选中一个形状');
+    return;
+  }
+  const shape = state.shapes[state.selected];
+  if (shape.locked) {
+    toast('该形状已锁定，按 Ctrl+Shift+L 解锁');
+    return;
+  }
+  const from = shape.shape_type;
+  if (from === target) {
+    toast('形状已经是该类型');
+    return;
+  }
+  let points = null;
+  if (target === 'polygon') {
+    if (from === 'rectangle') {
+      const [[x0, y0], [x1, y1]] = boundingBoxOf(shape);
+      points = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    } else if (from === 'circle') {
+      points = circleToPolygon(shape.points[0], shape.points[1]);
+    } else if (from === 'linestrip' || from === 'oriented_rectangle') {
+      points = shape.points.map((p) => [p[0], p[1]]);
+      if (points.length < 3) {
+        toast('至少需要 3 个点才能转成多边形');
+        return;
+      }
+    }
+  } else if (target === 'rectangle') {
+    if (['polygon', 'circle', 'oriented_rectangle', 'linestrip'].includes(from)) {
+      points = boundingBoxOf(shape);
+    }
+  } else if (target === 'linestrip') {
+    if (['polygon', 'line', 'oriented_rectangle'].includes(from)) {
+      points = shape.points.map((p) => [p[0], p[1]]);
+    }
+  } else if (target === 'line') {
+    if (from === 'linestrip' && shape.points.length === 2) {
+      points = shape.points.map((p) => [p[0], p[1]]);
+    } else {
+      toast('只有两个端点的折线可以转成直线');
+      return;
+    }
+  }
+  if (!points) {
+    toast(`暂不支持 ${from} → ${target}`);
+    return;
+  }
+  commit(() => {
+    shape.shape_type = target;
+    shape.points = points;
+    shape.mask = null;
+    state.selectedVertex = -1;
+  });
+  toast(`已转换为 ${target}`);
 }
 
 function copySelectedShape() {
@@ -1030,13 +1376,43 @@ function copySelectedShape() {
     toast('没有选中形状');
     return;
   }
-  const src = state.shapes[state.selected];
-  const copy = JSON.parse(JSON.stringify(src));
-  copy.points = copy.points.map((p) => [p[0] + 8, p[1] + 8]);
+  state.clipboard = [JSON.parse(JSON.stringify(state.shapes[state.selected]))];
+  toast('已复制形状，Ctrl+V 粘贴');
+}
+
+function pasteShapes() {
+  if (!state.clipboard || !state.clipboard.length) {
+    toast('剪贴板里没有形状');
+    return;
+  }
+  insertShapes(state.clipboard);
+}
+
+function duplicateSelectedShape() {
+  if (state.selected < 0) {
+    toast('没有选中形状');
+    return;
+  }
+  const src = JSON.parse(JSON.stringify(state.shapes[state.selected]));
+  insertShapes([src]);
+}
+
+function insertShapes(shapes, offset = 8) {
+  if (!state.image) {
+    toast('先打开一张图像');
+    return;
+  }
+  const copies = shapes.map((s) => {
+    const c = JSON.parse(JSON.stringify(s));
+    c.points = c.points.map((p) => [p[0] + offset, p[1] + offset]);
+    c.locked = false;
+    return c;
+  });
   commit(() => {
-    state.shapes.push(copy);
+    state.shapes.push(...copies);
     state.selected = state.shapes.length - 1;
   });
+  toast(`已粘贴 ${copies.length} 个形状`);
 }
 
 function editSelectedLabel() {
@@ -1045,24 +1421,30 @@ function editSelectedLabel() {
     return;
   }
   const idx = state.selected;
-  askLabel(state.shapes[idx].label, (label) => {
+  const shape = state.shapes[idx];
+  askLabel(shape.label, (label, meta) => {
     if (label === null) return;
     commit(() => {
-      state.shapes[idx].label = label;
+      const s = state.shapes[idx];
+      s.label = label;
+      s.group_id = (meta && meta.group_id) || null;
+      s.description = (meta && meta.description) || '';
     });
     addLabel(label);
-  });
+  }, { group_id: shape.group_id, description: shape.description });
 }
 
 /* ------------------------------------------------------------- label dialog */
 let labelCallback = null;
 let labelReturnValue = null;
 
-function askLabel(defaultValue, cb) {
+function askLabel(defaultValue, cb, initial) {
   labelCallback = cb;
   const modal = $('labelModal');
   const input = $('labelInput');
   input.value = defaultValue || '';
+  $('labelGroup').value = initial && initial.group_id != null ? String(initial.group_id) : '';
+  $('labelDesc').value = (initial && initial.description) || '';
 
   // 全部标签进 datalist（输入时可下拉选择，等价桌面版的 label 下拉框）
   const datalist = $('labelDatalist');
@@ -1096,11 +1478,19 @@ function askLabel(defaultValue, cb) {
   }, 30);
 }
 
+function currentLabelMeta() {
+  const g = $('labelGroup').value.trim();
+  return {
+    group_id: g === '' ? null : Math.max(0, parseInt(g, 10) || 0),
+    description: $('labelDesc').value.trim(),
+  };
+}
+
 function closeLabelDialog(value) {
   $('labelModal').hidden = true;
   const cb = labelCallback;
   labelCallback = null;
-  if (cb) cb(value);
+  if (cb) cb(value, value === null ? null : currentLabelMeta());
 }
 
 async function refreshDocks() {
@@ -1148,10 +1538,11 @@ function refreshShapeList() {
     const row = document.createElement('div');
     row.className = 'row' + (i === state.selected ? ' selected' : '');
     row.innerHTML = `<span class="dot" style="background:${css(colorForLabel(s.label))}"></span>
-      <span class="name"></span><span class="idxtag">${s.shape_type}</span>`;
+      <span class="name"></span><span class="idxtag">${s.locked ? '🔒' : ''}${s.shape_type}</span>`;
     row.querySelector('.name').textContent = s.label;
     row.addEventListener('click', () => {
       state.selected = i;
+      state.selectedVertex = -1;
       refreshDocks();
       redraw();
     });
@@ -1658,7 +2049,7 @@ function showEmpty(show) {
   $('emptyState').hidden = !show;
 }
 
-async function openImage(name) {
+async function openImage(name, carryShapes = null, keepView = null) {
   if (!state.sessionId) return;
   if (state.image && state.image.name === name) return;
   if (state.dirty && state.image) await saveNow(true);
@@ -1708,6 +2099,13 @@ async function openImage(name) {
     }
   }
 
+  if (carryShapes && carryShapes.length && state.shapes.length === 0) {
+    state.shapes = carryShapes.map((s) => JSON.parse(JSON.stringify(s)));
+    state.dirty = true;
+    scheduleDraft();
+    toast(`已沿用上一张的 ${state.shapes.length} 个形状`);
+  }
+
   // 先看 localStorage 里的草稿（同一次浏览器进程内最靠谱），
   // 再看服务器 .drafts/ 里的（进程被硬杀、蓝屏、断电后只剩它）
   let draft = readDraft(state.sessionId, name);
@@ -1736,7 +2134,14 @@ async function openImage(name) {
   }
 
   rememberSession(name);
-  fitToWindow();
+  if (keepView) {
+    view.zoom = keepView.zoom;
+    view.tx = keepView.tx;
+    view.ty = keepView.ty;
+    updateZoomLabel();
+  } else {
+    fitToWindow();
+  }
   refreshDocks();
   refreshImageList();
   updateStatus();
@@ -1750,7 +2155,49 @@ async function navigate(step) {
     toast(step > 0 ? '已经是最后一张' : '已经是第一张');
     return;
   }
-  await openImage(state.images[next].name);
+  const carry = state.keepPrev && state.image
+    ? JSON.parse(JSON.stringify(state.shapes))
+    : null;
+  const keepView = state.keepZoom && state.image ? { ...view } : null;
+  await openImage(state.images[next].name, carry, keepView);
+}
+
+function closeCurrentImage() {
+  if (!state.image) return;
+  if (state.dirty) saveNow(true);
+  state.image = null;
+  state.shapes = [];
+  state.selected = -1;
+  state.selectedVertex = -1;
+  state.drawing = null;
+  state.undo = [];
+  state.redo = [];
+  showEmpty(state.images.length === 0);
+  refreshDocks();
+  redraw();
+  toast('已关闭当前图像');
+}
+
+async function deleteAnnotationFile() {
+  if (!state.image) return;
+  const name = state.image.name;
+  if (!confirm(`删除 ${name}.json 标注文件？（图像保留）`)) return;
+  try {
+    await req('DELETE', `/api/sessions/${state.sessionId}/annotations/${encodeURIComponent(name)}`);
+    clearDraft(state.sessionId, name);
+    state.shapes = [];
+    state.flags = {};
+    state.selected = -1;
+    state.selectedVertex = -1;
+    state.dirty = false;
+    const item = state.images.find((x) => x.name === name);
+    if (item) item.annotated = false;
+    refreshDocks();
+    redraw();
+    toast(`已删除 ${name}.json`);
+  } catch (e) {
+    toast(`删除标注失败：${e.message}`, true);
+  }
 }
 
 async function deleteCurrentImage() {
@@ -1830,6 +2277,8 @@ const MENUS = [
       { id: 'save', label: '保存(S)', sc: 'Ctrl+S' },
       { id: 'saveAs', label: '另存为 JSON…', sc: 'Ctrl+Shift+S' },
       { sep: true },
+      { id: 'closeImage', label: '关闭当前图像', sc: 'Ctrl+W' },
+      { id: 'deleteAnnotation', label: '删除标注文件…' },
       { id: 'deleteImage', label: '删除当前图像…' },
       { sep: true },
       { id: 'logout', label: '退出登录' },
@@ -1840,23 +2289,53 @@ const MENUS = [
     items: [
       { id: 'undo', label: '撤销', sc: 'Ctrl+Z' },
       { id: 'redo', label: '重做', sc: 'Ctrl+Y' },
+      { id: 'undoLastPoint', label: '撤销上一个点', sc: '绘图时 Ctrl+Z' },
       { sep: true },
-      { id: 'copyShape', label: '复制形状', sc: 'Ctrl+D' },
+      { id: 'copyShape', label: '复制到剪贴板', sc: 'Ctrl+C' },
+      { id: 'pasteShape', label: '从剪贴板粘贴', sc: 'Ctrl+V' },
+      { id: 'duplicateShape', label: '复制形状（副本）', sc: 'Ctrl+D' },
       { id: 'deleteShape', label: '删除形状', sc: 'Delete' },
+      { sep: true },
+      { id: 'deletePoint', label: '删除选中顶点', sc: 'Backspace' },
+      { id: 'addPoint', label: '在边上加点' },
+      { id: 'lockShape', label: '锁定 / 解锁形状', sc: 'Ctrl+Shift+L' },
+      { sep: true },
+      { id: 'hideShapes', label: '隐藏全部形状' },
+      { id: 'showShapes', label: '显示全部形状' },
+      { id: 'toggleShapes', label: '切换形状显示', sc: 'T' },
+      { sep: true },
+      { id: 'selectUp', label: '选中上方形状', sc: 'Ctrl+↑' },
+      { id: 'selectDown', label: '选中下方形状', sc: 'Ctrl+↓' },
+      { id: 'selectLeft', label: '选中左侧形状', sc: 'Ctrl+←' },
+      { id: 'selectRight', label: '选中右侧形状', sc: 'Ctrl+→' },
       { sep: true },
       { id: 'editShapeLabel', label: '修改选中形状标签…' },
       { id: 'editLabels', label: '编辑标签集…' },
     ],
   },
   {
+    name: '转换',
+    items: [
+      { id: 'convertPolygon', label: '转换为多边形' },
+      { id: 'convertRectangle', label: '转换为矩形（外接框）' },
+      { id: 'convertLinestrip', label: '转换为折线' },
+      { id: 'convertLine', label: '转换为直线' },
+      { id: 'convertMask', label: '转换为掩码（暂不支持）' },
+    ],
+  },
+  {
     name: '视图',
     items: [
       { id: 'fit', label: '适合窗口', sc: 'Ctrl+F' },
+      { id: 'fitSelection', label: '适合选中形状', sc: 'Ctrl+Shift+F' },
       { id: 'zoom100', label: '原始大小', sc: 'Ctrl+0' },
       { id: 'zoomIn', label: '放大', sc: 'Ctrl++' },
       { id: 'zoomOut', label: '缩小', sc: 'Ctrl+-' },
       { sep: true },
       { id: 'bc', label: '亮度 / 对比度…' },
+      { id: 'fillDrawing', label: '绘制时填充多边形' },
+      { id: 'keepPrev', label: '保留上一张标注（切换图像时）' },
+      { id: 'keepZoom', label: '保留上一张缩放（切换图像时）' },
       { id: 'reload', label: '刷新图像列表' },
     ],
   },
@@ -1937,7 +2416,7 @@ const TOOLBAR = [
   { id: 'deleteImage', icon: 'trash', text: '删除文件' },
   { sep: true },
   { id: 'undo', icon: 'undo', text: '撤销' },
-  { id: 'copyShape', icon: 'copy', text: '复制' },
+  { id: 'duplicateShape', icon: 'copy', text: '复制' },
   { id: 'deleteShape', icon: 'del', text: '删除' },
   { sep: true },
   { id: 'bc', icon: 'sun', text: '亮度对比度' },
@@ -2072,6 +2551,12 @@ function runAction(id) {
     case 'saveAs':
       downloadAnnotation();
       break;
+    case 'closeImage':
+      closeCurrentImage();
+      break;
+    case 'deleteAnnotation':
+      deleteAnnotationFile();
+      break;
     case 'deleteImage':
       deleteCurrentImage();
       break;
@@ -2084,11 +2569,83 @@ function runAction(id) {
     case 'redo':
       redo();
       break;
+    case 'undoLastPoint':
+      undoLastPoint();
+      break;
     case 'copyShape':
       copySelectedShape();
       break;
+    case 'pasteShape':
+      pasteShapes();
+      break;
+    case 'duplicateShape':
+      duplicateSelectedShape();
+      break;
     case 'deleteShape':
       deleteSelectedShape();
+      break;
+    case 'deletePoint':
+      deleteSelectedPoint();
+      break;
+    case 'addPoint':
+      addPointToEdge();
+      break;
+    case 'lockShape':
+      toggleSelectedLock();
+      break;
+    case 'hideShapes':
+      setShapeVisibility(false);
+      toast('已隐藏全部形状');
+      break;
+    case 'showShapes':
+      setShapeVisibility(true);
+      toast('已显示全部形状');
+      break;
+    case 'toggleShapes':
+      toggleShapeVisibility();
+      break;
+    case 'selectUp':
+      selectNeighbor('up');
+      break;
+    case 'selectDown':
+      selectNeighbor('down');
+      break;
+    case 'selectLeft':
+      selectNeighbor('left');
+      break;
+    case 'selectRight':
+      selectNeighbor('right');
+      break;
+    case 'convertPolygon':
+      convertSelectedShape('polygon');
+      break;
+    case 'convertRectangle':
+      convertSelectedShape('rectangle');
+      break;
+    case 'convertLinestrip':
+      convertSelectedShape('linestrip');
+      break;
+    case 'convertLine':
+      convertSelectedShape('line');
+      break;
+    case 'convertMask':
+      toast('Web 版暂不支持掩码形状（需服务端栅格化）', true);
+      break;
+    case 'fitSelection':
+      fitToSelection();
+      break;
+    case 'fillDrawing':
+      state.fillDrawing = !state.fillDrawing;
+      redraw();
+      toast(state.fillDrawing ? '绘制时填充已开启' : '绘制时填充已关闭');
+      break;
+    case 'keepPrev':
+      state.keepPrev = !state.keepPrev;
+      toast(state.keepPrev ? '切换图像时保留上一张标注' : '已关闭保留上一张标注');
+      break;
+    case 'keepZoom':
+      state.keepZoom = !state.keepZoom;
+      toast(state.keepZoom ? '切换图像时保留缩放' : '已关闭保留缩放');
       break;
     case 'editShapeLabel':
       editSelectedLabel();
@@ -2128,9 +2685,11 @@ function runAction(id) {
   }
 }
 
-function pickFiles(multiple) {
+function pickFiles(directory) {
   const input = $('fileInput');
   input.multiple = true;
+  if (directory) input.setAttribute('webkitdirectory', '');
+  else input.removeAttribute('webkitdirectory');
   input.value = '';
   input.click();
 }
@@ -2238,25 +2797,66 @@ document.addEventListener('keydown', (ev) => {
     switch (key.toLowerCase()) {
       case 'o':
         ev.preventDefault();
+        pickFiles(false);
+        return;
+      case 'u':
+        ev.preventDefault();
         pickFiles(true);
+        return;
+      case 'delete':
+        ev.preventDefault();
+        deleteAnnotationFile();
         return;
       case 's':
         ev.preventDefault();
         if (ev.shiftKey) downloadAnnotation();
         else saveNow(false);
         return;
+      case 'w':
+        ev.preventDefault();
+        closeCurrentImage();
+        return;
       case 'z':
         ev.preventDefault();
-        undo();
+        if (ev.shiftKey) redo();
+        else if (state.drawing) undoLastPoint();
+        else undo();
         return;
       case 'y':
         ev.preventDefault();
         redo();
         return;
-      case 'd':
+      case 'c':
         ev.preventDefault();
         copySelectedShape();
         return;
+      case 'v':
+        ev.preventDefault();
+        pasteShapes();
+        return;
+      case 'd':
+        ev.preventDefault();
+        if (ev.shiftKey) navigate(1);
+        else duplicateSelectedShape();
+        return;
+      case 'a':
+        if (ev.shiftKey) {
+          ev.preventDefault();
+          navigate(-1);
+          return;
+        }
+        break;
+      case 'e':
+        ev.preventDefault();
+        editSelectedLabel();
+        return;
+      case 'l':
+        if (ev.shiftKey) {
+          ev.preventDefault();
+          toggleSelectedLock();
+          return;
+        }
+        break;
       case 'n':
         ev.preventDefault();
         setTool('polygon');
@@ -2267,7 +2867,8 @@ document.addEventListener('keydown', (ev) => {
         return;
       case 'f':
         ev.preventDefault();
-        fitToWindow();
+        if (ev.shiftKey) fitToSelection();
+        else fitToWindow();
         return;
       case '0':
         ev.preventDefault();
@@ -2282,6 +2883,22 @@ document.addEventListener('keydown', (ev) => {
         ev.preventDefault();
         zoomAt(1 / 1.2);
         return;
+      case 'arrowup':
+        ev.preventDefault();
+        selectNeighbor('up');
+        return;
+      case 'arrowdown':
+        ev.preventDefault();
+        selectNeighbor('down');
+        return;
+      case 'arrowleft':
+        ev.preventDefault();
+        selectNeighbor('left');
+        return;
+      case 'arrowright':
+        ev.preventDefault();
+        selectNeighbor('right');
+        return;
       default:
         break;
     }
@@ -2294,20 +2911,29 @@ document.addEventListener('keydown', (ev) => {
       else if (state.drawing) cancelDrawing();
       else if (state.selected >= 0) {
         state.selected = -1;
+        state.selectedVertex = -1;
         refreshDocks();
         redraw();
       }
       break;
     case 'Enter':
+    case ' ':
       if (state.drawing && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
+        ev.preventDefault();
         finishDrawing();
       }
       break;
     case 'Delete':
-    case 'Backspace':
       if (!typing) {
         ev.preventDefault();
         deleteSelectedShape();
+      }
+      break;
+    case 'Backspace':
+      if (!typing) {
+        ev.preventDefault();
+        if (state.drawing) undoLastPoint();
+        else deleteSelectedPoint();
       }
       break;
     case 'a':
@@ -2317,6 +2943,10 @@ document.addEventListener('keydown', (ev) => {
     case 'd':
     case 'D':
       if (!ctrl) navigate(1);
+      break;
+    case 't':
+    case 'T':
+      toggleShapeVisibility();
       break;
     default:
       break;

@@ -292,6 +292,17 @@ def get_annotation(session: str, name: str, request: Request) -> JSONResponse:
     return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
 
 
+@app.delete("/api/sessions/{session}/annotations/{name}")
+def delete_annotation(session: str, name: str, request: Request) -> Dict[str, str]:
+    """labelme's "Delete Annotation File": removes the JSON, keeps the image."""
+    folder = _folder(session, request)
+    name = safe_name(name)
+    for path in (folder / (name + ".json"), draft_path(folder, name)):
+        if path.is_file():
+            path.unlink()
+    return {"deleted": name}
+
+
 @app.put("/api/sessions/{session}/annotations/{name}")
 def put_annotation(
     session: str, name: str, request: Request, payload: Dict[str, Any] = Body(...)
