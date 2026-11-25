@@ -38,6 +38,7 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".we
 SESSION_RE = re.compile(r"^\d{14}(_\d+)?$")
 NAME_RE = re.compile(r"^[\w\-. ()\u4e00-\u9fff]+$")
 SESSION_LOCK = threading.Lock()
+DRAFT_DIRNAME = ".drafts"   # 崩溃草稿：data/<session>/.drafts/<图名>.json，不进标注目录
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -100,6 +101,37 @@ def write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     os.replace(tmp, path)
+
+
+def write_json_durable(path: Path, payload: Dict[str, Any]) -> None:
+    """原子 + fsync 落盘。草稿要能扛住蓝屏/断电，不能只躺在系统缓存里。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    with open(tmp, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    try:  # 目录项也刷一次，Linux 上断电后才不会丢 rename
+        fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def draft_path(folder: Path, name: str) -> Path:
+    return folder / DRAFT_DIRNAME / (name + ".json")
+
+
+def mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 # ---------------------------------------------------------------- sessions
@@ -196,10 +228,10 @@ def get_image(session: str, name: str) -> FileResponse:
 
 @app.delete("/api/sessions/{session}/images/{name}")
 def delete_image(session: str, name: str) -> Dict[str, str]:
-    """labelme's "Delete File": removes the image and its annotation."""
+    """labelme's "Delete File": removes the image, its annotation and its draft."""
     folder = session_dir(session)
     name = safe_name(name)
-    for path in (folder / name, folder / (name + ".json")):
+    for path in (folder / name, folder / (name + ".json"), draft_path(folder, name)):
         if path.is_file():
             path.unlink()
     return {"deleted": name}
@@ -245,6 +277,104 @@ def put_annotation(
             normalized[key] = value
     write_json_atomic(folder / (name + ".json"), normalized)
     return {"saved": name + ".json", "shapes": len(shapes)}
+
+
+# ---------------------------------------------------------------- crash drafts
+@app.put("/api/sessions/{session}/drafts/{name}")
+def put_draft(
+    session: str, name: str, payload: Dict[str, Any] = Body(...)
+) -> Dict[str, Any]:
+    """保存编辑中的草稿。
+
+    浏览器崩溃 / 强杀 / 蓝屏时，localStorage 不一定能落盘（实测硬杀进程后
+    localStorage 直接丢），所以草稿必须同时写进服务器：data/<session>/.drafts/。
+    文件名与图像同名，带 .json 后缀，正常保存标注后前端会删掉它。
+    """
+    folder = session_dir(session)
+    name = safe_name(name)
+    shapes = payload.get("shapes")
+    if not isinstance(shapes, list):
+        raise HTTPException(status_code=400, detail="shapes must be a list")
+    saved = {
+        "name": name,
+        "at": int(payload.get("at") or 0),
+        "imageWidth": int(payload.get("imageWidth") or 0),
+        "imageHeight": int(payload.get("imageHeight") or 0),
+        "flags": payload.get("flags") if isinstance(payload.get("flags"), dict) else {},
+        "shapes": shapes,
+    }
+    write_json_durable(draft_path(folder, name), saved)
+    return {"saved": name, "shapes": len(shapes)}
+
+
+@app.get("/api/sessions/{session}/drafts/{name}")
+def get_draft(session: str, name: str) -> Dict[str, Any]:
+    """读草稿，并顺带给出“草稿是否比已保存的标注更新”，前端据此决定是否恢复。"""
+    folder = session_dir(session)
+    name = safe_name(name)
+    path = draft_path(folder, name)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="draft not found")
+    annotation_m = mtime(folder / (name + ".json"))
+    draft_m = mtime(path)
+    return {
+        "draft": json.loads(path.read_text(encoding="utf-8")),
+        "draftMtime": draft_m,
+        "annotationMtime": annotation_m,
+        "stale": annotation_m > draft_m,
+    }
+
+
+@app.delete("/api/sessions/{session}/drafts/{name}")
+def delete_draft(session: str, name: str) -> Dict[str, str]:
+    folder = session_dir(session)
+    name = safe_name(name)
+    path = draft_path(folder, name)
+    if path.is_file():
+        path.unlink()
+    return {"deleted": name}
+
+
+@app.get("/api/recent")
+def recent_session() -> Dict[str, Any]:
+    """最近一次动过的会话与图像，供浏览器被强杀后（localStorage 丢了）重新接上。"""
+    ensure_data_dir()
+    best: Optional[tuple] = None
+    for folder in DATA_DIR.iterdir():
+        if not folder.is_dir() or not SESSION_RE.match(folder.name):
+            continue
+        latest = mtime(folder)
+        image: Optional[str] = None
+        group: Optional[str] = None
+        for path in folder.glob("*.json"):
+            if path.name.endswith(".json") and path.is_file():
+                them = mtime(path)
+                if them >= latest:
+                    latest, image, group = them, path.name[:-5], "annotation"
+        drafts = folder / DRAFT_DIRNAME
+        if drafts.is_dir():
+            for path in drafts.glob("*.json"):
+                them = mtime(path)
+                if them >= latest:
+                    latest, image, group = them, path.name[:-5], "draft"
+        for path in image_files(folder):
+            them = mtime(path)
+            if them > latest:
+                latest, image, group = them, path.name, "image"
+        if best is None or latest > best[0]:
+            best = (latest, folder.name, image, group)
+
+    if best is None:
+        raise HTTPException(status_code=404, detail="no session yet")
+    latest, session, image, group = best
+    has_draft = bool(image) and draft_path(DATA_DIR / session, image).is_file()
+    return {
+        "session": session,
+        "image": image,
+        "source": group,
+        "hasDraft": has_draft,
+        "at": datetime.fromtimestamp(latest).isoformat(" ", timespec="seconds"),
+    }
 
 
 # ---------------------------------------------------------------- label set

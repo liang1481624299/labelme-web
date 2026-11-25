@@ -8,6 +8,10 @@
 const VERSION = '7.11.0';
 const STORE_SESSION = 'labelme.web.session';
 const STORE_LABELS = 'labelme.web.labels';
+const STORE_LAST = 'labelme.web.lastSession';
+const DRAFT_PREFIX = 'labelme.web.draft.';
+const LIVE_CHANNEL = 'labelme-web-live';
+const LAST_SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7; // 7 天内都愿意接上
 
 const COLORMAP = [
   [128, 0, 0], [0, 128, 0], [128, 128, 0], [0, 0, 128], [128, 0, 128],
@@ -449,6 +453,8 @@ function recordChange(before) {
   if (state.undo.length > 150) state.undo.shift();
   state.redo.length = 0;
   state.dirty = true;
+  scheduleDraft();
+  rememberSession();
   refreshDocks();
   updateStatus();
   scheduleSave();
@@ -470,6 +476,7 @@ function undo() {
   state.shapes = JSON.parse(state.undo.pop());
   state.selected = -1;
   state.dirty = true;
+  scheduleDraft();
   redraw();
   refreshDocks();
   updateStatus();
@@ -485,6 +492,7 @@ function redo() {
   state.shapes = JSON.parse(state.redo.pop());
   state.selected = -1;
   state.dirty = true;
+  scheduleDraft();
   redraw();
   refreshDocks();
   updateStatus();
@@ -534,6 +542,8 @@ async function saveNow(silent) {
       buildAnnotation()
     );
     state.dirty = false;
+    clearDraft(state.sessionId, target);
+    rememberSession(target);
     const item = state.images.find((x) => x.name === target);
     if (item) item.annotated = true;
     refreshImageList();
@@ -1172,10 +1182,194 @@ function updateStatus() {
   }
 }
 
+/* ------------------------------------------------- 断线/崩溃后的会话恢复 */
+/** 把“当前会话 + 当前图像 + 时间”写进 localStorage。
+ *  浏览器进程被强杀、蓝屏、断电时 sessionStorage 会没了，但 localStorage 落在磁盘上。 */
+function rememberSession(imageName) {
+  if (!state.sessionId) return;
+  try {
+    localStorage.setItem(STORE_LAST, JSON.stringify({
+      session: state.sessionId,
+      image: imageName || (state.image && state.image.name) || null,
+      at: Date.now(),
+    }));
+  } catch (e) { /* ignore */ }
+}
+
+function readLastSession() {
+  try {
+    const raw = localStorage.getItem(STORE_LAST);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || !/^\d{14}(_\d+)?$/.test(String(obj.session || ''))) return null;
+    if (Date.now() - Number(obj.at || 0) > LAST_SESSION_MAX_AGE_MS) return null;
+    return obj;
+  } catch (e) {
+    return null;
+  }
+}
+
+function draftKey(session, name) {
+  return `${DRAFT_PREFIX}${session}.${name}`;
+}
+
+/** 服务器侧的“最近一次动过的会话”：localStorage 被硬杀弄丢后的唯一线索。 */
+async function fetchRecent() {
+  try {
+    return await req('GET', '/api/recent');
+  } catch (e) {
+    return null;
+  }
+}
+
+let draftTimer = null;
+let serverDraftTimer = null;
+
+/** 每次改动都存两份草稿：
+ *  - localStorage（250ms 合并）：标签页崩溃、刷新、正常关闭时最快；
+ *  - 服务器 data/<session>/.drafts/（600ms 合并）：硬杀进程/蓝屏/断电时
+ *    只有它能活下来（实测硬杀 Edge 后 localStorage 直接丢）。
+ *  真正落盘到标注 JSON 是 800ms 的自动保存，保存成功会清掉这两份草稿。 */
+function scheduleDraft() {
+  if (!state.sessionId || !state.image) return;
+  const session = state.sessionId;
+  const target = state.image.name;
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    if (state.sessionId === session && state.image && state.image.name === target) writeDraft();
+  }, 250);
+  clearTimeout(serverDraftTimer);
+  serverDraftTimer = setTimeout(() => pushDraft(session, target), 600);
+}
+
+function cancelDraftTimers() {
+  clearTimeout(draftTimer);
+  clearTimeout(serverDraftTimer);
+}
+
+function draftPayload() {
+  return {
+    shapes: state.shapes,
+    flags: state.flags,
+    imageWidth: state.image.w,
+    imageHeight: state.image.h,
+    at: Date.now(),
+  };
+}
+
+function writeDraft() {
+  if (!state.sessionId || !state.image) return;
+  try {
+    localStorage.setItem(
+      draftKey(state.sessionId, state.image.name),
+      JSON.stringify({
+        shapes: state.shapes,
+        flags: state.flags,
+        w: state.image.w,
+        h: state.image.h,
+        at: Date.now(),
+      })
+    );
+  } catch (e) { /* 超出配额就算了，服务器那份还在 */ }
+}
+
+async function pushDraft(session, target) {
+  if (!session || !target) return;
+  if (state.sessionId !== session || !state.image || state.image.name !== target) return;
+  try {
+    await req('PUT', `/api/sessions/${session}/drafts/${encodeURIComponent(target)}`, draftPayload());
+  } catch (e) { /* 离线/会话没了就不管，标注本身还有自动保存 */ }
+}
+
+function flushDraftNow() {
+  if (!state.sessionId || !state.image || !state.dirty) return;
+  const session = state.sessionId;
+  const target = state.image.name;
+  cancelDraftTimers();
+  writeDraft();
+  pushDraft(session, target);
+}
+
+function readDraft(session, name) {
+  try {
+    const raw = localStorage.getItem(draftKey(session, name));
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearDraft(session, name) {
+  try {
+    localStorage.removeItem(draftKey(session, name));
+  } catch (e) { /* ignore */ }
+  req('DELETE', `/api/sessions/${session}/drafts/${encodeURIComponent(name)}`)
+    .catch(() => { /* 没有就算了 */ });
+}
+
+/** 服务器上的草稿：硬杀进程 / 蓝屏 / 断电后 localStorage 已经没了，
+ *  只有 data/<session>/.drafts/ 里这一份还在。stale 表示标注 JSON 比草稿新，直接丢掉。 */
+async function readServerDraft(session, name) {
+  try {
+    const res = await req('GET', `/api/sessions/${session}/drafts/${encodeURIComponent(name)}`);
+    return res && res.draft ? res : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** 同一个浏览器里可能开着别的标签页。开新标签页时先问一句“有人活着吗”，
+ *  有人用着同一个会话就新建一个，避免两个页面同时写同一份 JSON。 */
+function probeLiveTab(session, timeoutMs) {
+  return new Promise((resolve) => {
+    if (typeof BroadcastChannel === 'undefined') {
+      resolve(false);
+      return;
+    }
+    let ch;
+    try {
+      ch = new BroadcastChannel(LIVE_CHANNEL);
+    } catch (e) {
+      resolve(false);
+      return;
+    }
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      try { ch.close(); } catch (e) { /* ignore */ }
+      resolve(v);
+    };
+    ch.onmessage = (ev) => {
+      const d = ev.data || {};
+      if (d.type === 'pong' && d.session === session) finish(true);
+    };
+    try {
+      ch.postMessage({ type: 'ping' });
+    } catch (e) { /* ignore */ }
+    setTimeout(() => finish(false), timeoutMs || 450);
+  });
+}
+
+function initLiveChannel() {
+  if (typeof BroadcastChannel === 'undefined') return;
+  try {
+    const ch = new BroadcastChannel(LIVE_CHANNEL);
+    ch.onmessage = (ev) => {
+      const d = ev.data || {};
+      if (d.type === 'ping' && state.sessionId) {
+        ch.postMessage({ type: 'pong', session: state.sessionId });
+      }
+    };
+  } catch (e) { /* ignore */ }
+}
+
 /* --------------------------------------------------------------- sessions */
 function resetSessionState() {
+  cancelDraftTimers();
   state.image = null;
   state.shapes = [];
+  state.flags = {};
   state.selected = -1;
   state.images = [];
   state.undo = [];
@@ -1191,6 +1385,7 @@ async function newSession(reason) {
   sessionStorage.setItem(STORE_SESSION, res.session);
   resetSessionState();
   state.images = (await req('GET', `/api/sessions/${res.session}/images`)).images || [];
+  rememberSession(null);
   showEmpty(state.images.length === 0);
   refreshDocks();
   refreshImageList();
@@ -1227,22 +1422,28 @@ async function ensureSession() {
   return await newSession();
 }
 
-async function loadSession(id) {
+async function loadSession(id, preferredImage) {
+  cancelDraftTimers();
   state.sessionId = id;
   sessionStorage.setItem(STORE_SESSION, id);
   state.shapes = [];
+  state.flags = {};
   state.selected = -1;
   state.undo = [];
   state.redo = [];
   state.image = null;
   const res = await req('GET', `/api/sessions/${id}/images`);
   state.images = res.images || [];
+  rememberSession(preferredImage);
   refreshImageList();
   updateStatus();
   redraw();
   showEmpty(state.images.length === 0);
   if (state.images.length) {
-    await openImage(state.images[0].name);
+    const wanted = preferredImage && state.images.some((x) => x.name === preferredImage)
+      ? preferredImage
+      : state.images[0].name;
+    await openImage(wanted);
   }
 }
 
@@ -1299,6 +1500,7 @@ async function openImage(name) {
   if (!state.sessionId) return;
   if (state.image && state.image.name === name) return;
   if (state.dirty && state.image) await saveNow(true);
+  cancelDraftTimers();
 
   const url = `/api/sessions/${state.sessionId}/raw/${encodeURIComponent(name)}`;
   const im = new Image();
@@ -1344,6 +1546,34 @@ async function openImage(name) {
     }
   }
 
+  // 先看 localStorage 里的草稿（同一次浏览器进程内最靠谱），
+  // 再看服务器 .drafts/ 里的（进程被硬杀、蓝屏、断电后只剩它）
+  let draft = readDraft(state.sessionId, name);
+  let draftFrom = '浏览器';
+  if (!draft) {
+    const remote = await readServerDraft(state.sessionId, name);
+    if (remote && !remote.stale) {
+      draft = remote.draft;
+      draftFrom = '服务器';
+    } else if (remote && remote.stale) {
+      clearDraft(state.sessionId, name);
+    }
+  }
+  if (draft && Array.isArray(draft.shapes)) {
+    const dw = Number(draft.w || draft.imageWidth);
+    const dh = Number(draft.h || draft.imageHeight);
+    const sameSize = dw === state.image.w && dh === state.image.h;
+    if (sameSize && JSON.stringify(draft.shapes) !== JSON.stringify(state.shapes)) {
+      state.shapes = draft.shapes;
+      state.flags = draft.flags && typeof draft.flags === 'object' ? draft.flags : state.flags;
+      toast(`已恢复 ${name} 未保存的草稿（${state.shapes.length} 个形状，来自${draftFrom}）`);
+      scheduleSave();
+    } else if (sameSize) {
+      clearDraft(state.sessionId, name);
+    }
+  }
+
+  rememberSession(name);
   fitToWindow();
   refreshDocks();
   refreshImageList();
@@ -1367,6 +1597,7 @@ async function deleteCurrentImage() {
   if (!confirm(`删除图像 ${name} 及其标注？`)) return;
   try {
     await req('DELETE', `/api/sessions/${state.sessionId}/images/${encodeURIComponent(name)}`);
+    clearDraft(state.sessionId, name);
     state.image = null;
     state.shapes = [];
     state.selected = -1;
@@ -1430,6 +1661,7 @@ const MENUS = [
       { id: 'openFile', label: '打开文件(O)…', sc: 'Ctrl+O' },
       { id: 'upload', label: '打开文件夹…', sc: 'Ctrl+Shift+O' },
       { id: 'sessions', label: '切换会话…' },
+      { id: 'newSession', label: '新建会话…' },
       { sep: true },
       { id: 'save', label: '保存(S)', sc: 'Ctrl+S' },
       { id: 'saveAs', label: '另存为 JSON…', sc: 'Ctrl+Shift+S' },
@@ -1655,6 +1887,9 @@ function runAction(id) {
     case 'sessions':
       openSessionModal();
       break;
+    case 'newSession':
+      createNewSessionFromMenu();
+      break;
     case 'save':
       saveNow(false);
       break;
@@ -1722,11 +1957,22 @@ function pickFiles(multiple) {
 }
 
 /* ---------------------------------------------------------------- modals */
+async function createNewSessionFromMenu() {
+  try {
+    if (state.dirty && state.image) await saveNow(true);
+    await newSession();
+    toast(`已新建会话 ${state.sessionId}`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 function openSessionModal() {
   const modal = $('sessionModal');
   modal.hidden = false;
   const box = $('sessionList');
   box.innerHTML = '<div class="empty-list">加载中…</div>';
+  const last = readLastSession();
   listSessions().then((items) => {
     if (!items.length) {
       box.innerHTML = '<div class="empty-list">还没有会话</div>';
@@ -1735,13 +1981,16 @@ function openSessionModal() {
     box.innerHTML = '';
     items.forEach((s) => {
       const row = document.createElement('div');
-      row.className = 'row' + (s.session === state.sessionId ? ' selected' : '');
-      row.innerHTML = `<span class="name">${s.session}</span>
+      const isLast = last && last.session === s.session;
+      row.className = 'row'
+        + (s.session === state.sessionId ? ' selected' : '')
+        + (isLast ? ' last' : '');
+      row.innerHTML = `<span class="name">${s.session}${isLast ? '<span class="tag">上次</span>' : ''}</span>
         <span class="meta">${s.images} 图 / ${s.annotated} 已标注 · ${s.created}</span>`;
       row.addEventListener('click', async () => {
         modal.hidden = true;
         try {
-          await loadSession(s.session);
+          await loadSession(s.session, isLast ? last.image : null);
         } catch (e) {
           toast(e.message, true);
         }
@@ -1994,6 +2243,8 @@ function bindUi() {
 
   window.addEventListener('beforeunload', () => {
     if (state.dirty && state.image) {
+      // 关标签页/关浏览器时自动保存可能还没到 800ms，这里补一枪：
+      // 1) 直接写标注；2) 顺手把草稿也 keepalive 发出去，双保险
       try {
         fetch(`/api/sessions/${state.sessionId}/annotations/${encodeURIComponent(state.image.name)}`, {
           method: 'PUT',
@@ -2002,8 +2253,23 @@ function bindUi() {
           keepalive: true,
         });
       } catch (e) { /* ignore */ }
+      try {
+        writeDraft();
+        fetch(`/api/sessions/${state.sessionId}/drafts/${encodeURIComponent(state.image.name)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(draftPayload()),
+          keepalive: true,
+        });
+      } catch (e) { /* ignore */ }
     }
   });
+
+  // 切到后台/合盖前先落一次草稿：笔记本睡眠直接断电，回来就当崩溃处理
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) flushDraftNow();
+  });
+  window.addEventListener('pagehide', flushDraftNow);
 }
 
 async function reloadImageCanvas() {
@@ -2034,6 +2300,7 @@ async function boot() {
   bindUi();
   setTool('select');
   showEmpty(true);
+  initLiveChannel();
 
   try {
     const forced = new URLSearchParams(location.search).get('session');
@@ -2045,10 +2312,53 @@ async function boot() {
         if (e.status === 404) await newSession(`链接里的会话 ${forced} 不存在`);
         else throw e;
       }
-    } else {
-      await ensureSession();
-      await loadSession(state.sessionId);
+      return;
     }
+
+    // 1) 同一个标签页刷新：sessionStorage 还在，直接用
+    const active = sessionStorage.getItem(STORE_SESSION);
+    if (active) {
+      try {
+        await loadSession(active);
+        return;
+      } catch (e) {
+        if (e.status !== 404) throw e;
+      }
+    }
+
+    // 2) 新标签页/浏览器崩溃后重开：sessionStorage 没了，退回 localStorage 的上次会话
+    const last = readLastSession();
+    if (last) {
+      const busy = await probeLiveTab(last.session);
+      if (busy) {
+        await newSession();
+        toast(`另一个标签页正在使用 ${last.session}，已新建会话 ${state.sessionId}`);
+        return;
+      }
+      try {
+        await loadSession(last.session, last.image);
+        toast(`已恢复上次会话 ${last.session}${last.image ? ' · ' + last.image : ''}`);
+        return;
+      } catch (e) {
+        if (e.status !== 404) throw e;
+      }
+    }
+
+    // 3) localStorage 也被硬杀/蓝屏弄丢了：问服务器“最近动过哪个会话”
+    const recent = await fetchRecent();
+    if (recent && recent.session) {
+      try {
+        await loadSession(recent.session, recent.image);
+        toast(`已从服务器记录恢复上次会话 ${recent.session}${recent.at ? '（最后修改 ' + recent.at + '）' : ''}`);
+        return;
+      } catch (e) {
+        if (e.status !== 404) throw e;
+      }
+    }
+
+    // 4) 真的什么都没有：开新会话
+    await ensureSession();
+    await loadSession(state.sessionId);
   } catch (e) {
     toast(`无法连接后端：${e.message}`, true);
     const left = $('statusLeft');

@@ -24,7 +24,8 @@ labelme-web/
 │   ├── labels.txt        # 项目级标签集（每行一个，可导入/导出）
 │   └── 20260101013030/   # 一个浏览器会话一个文件夹
 │       ├── 114.jpg
-│       └── 114.json
+│       ├── 114.json
+│       └── .drafts/      # 崩溃草稿，正常保存后自动删除
 ├── deploy/
 │   ├── nginx.conf
 │   ├── labelme-web.service
@@ -35,8 +36,9 @@ labelme-web/
 ## 会话与数据布局
 
 浏览器第一次打开页面时，后端在 `data/` 下创建 `YYYYMMDDHHMMSS` 目录（同一秒重复则加 `_2`、`_3`），
-会话 id 存在 **sessionStorage**：新开标签页/新窗口 = 新会话目录，刷新页面仍是当前会话。
-也可从「文件 → 切换会话…」切换或新建；用 `?session=20260101013030` 可固定打开某个会话（便于分享链接）。
+会话 id 存在 **sessionStorage**；刷新页面仍是当前会话，重开浏览器会接回上次会话（见下文恢复链路）。
+需要全新目录时用「文件 → 新建会话…」，也可从「文件 → 切换会话…」切换；
+用 `?session=20260101013030` 可固定打开某个会话（便于分享链接）。
 
 `data/` 是纯粹的运行目录：**整个删掉也没关系**，下次新建会话（或读会话列表）时后端会自己
 `mkdir` 重建，跑着的服务不用重启。所以备份/迁移只需要拷 `data/` 本身。
@@ -90,6 +92,47 @@ data/20260101013030/114.json    ← 该图的标注
 > 顺带说明为什么不用浏览器指纹：指纹会随浏览器升级、隐私开关、多设备而变，
 > 会导致「同一个人的标注突然分裂成好几个文件夹」；而且它属于隐私敏感信息，不适合拿来当目录主键。
 > 这里要的语义是「一次标注会话一个文件夹」，随机会话 id + 失效自愈比指纹更稳、更可控。
+
+## 崩溃 / 强杀 / 蓝屏后的会话恢复
+
+浏览器被任务管理器强杀、渲染进程崩溃、笔记本蓝屏或直接断电，都不是「正常关闭」，
+`beforeunload` 不保证执行，`sessionStorage` 一定会丢，`localStorage` 也不一定落盘
+（本机实测：写入后 1.5 秒直接 `taskkill /F`，重开 `localStorage` 已经是空的）。
+所以恢复链路分四层，任何一层命中都能接着做：
+
+| 顺序 | 来源 | 能扛住什么 |
+| --- | --- | --- |
+| 1 | `sessionStorage` | 刷新、同标签页重开 |
+| 2 | `localStorage`（`labelme.web.lastSession`） | 标签页崩溃、正常关浏览器 |
+| 3 | 服务器 `GET /api/recent` | 强杀进程、蓝屏、断电（只看磁盘上最后一次改动） |
+| 4 | 新建会话 | 上面都没有（首次使用 / 会话被删） |
+
+启动时按顺序探活，命中 2 或 3 会弹一句「已恢复上次会话 2026…」，并把上次那张图直接打开；
+会话目录在服务器上已经没了就自动落到下一层，不会停在错误页。
+
+第 2 层还有一道 **BroadcastChannel 探活**（`labelme-web-live`，等 450 ms）：
+如果同一个浏览器里已经有标签页活着并用着这个会话，就不抢，直接新建会话，避免两个页面同时写同一份 JSON。
+
+### 未保存的编辑怎么找回
+
+标注本身是「停手 800 ms 自动保存」，崩溃往往发生在保存之前，所以另存一份**草稿**，双写：
+
+- `localStorage`：改动后 250 ms 写 `labelme.web.draft.<session>.<图名>`；
+- 服务器：改动后 600 ms `PUT /api/sessions/{s}/drafts/{图名}`，落在
+  `data/<session>/.drafts/<图名>.json`，写入走「临时文件 + `fsync` + rename」，断电也不容易坏。
+
+打开一张图时先读 `localStorage` 草稿，没有再读服务器草稿；只有「尺寸一致且形状与已保存的 JSON 不同」
+才恢复，并立刻重新自动保存。标注保存成功后两份草稿都会被删掉，所以草稿存在就等价于「有没保存的东西」。
+读服务器草稿时后端会比对 mtime，标注 JSON 更新则判定草稿过期，直接丢弃，不会把旧数据盖回来。
+
+其余几处补漏：
+
+- 关标签页/关浏览器时 `beforeunload` 用 `keepalive` 把标注和草稿各补一枪；
+- 切到后台、合盖（`visibilitychange` / `pagehide`）立刻 flush 一次草稿，笔记本睡眠当崩溃处理；
+- 换会话/换图时取消未触发的草稿定时器，避免把 A 图的形状写到 B 图。
+
+最坏情况只丢最后 600 ms 内的改动；`data/<session>/.drafts/` 是隐藏子目录，不影响「原图和 JSON 同目录」，
+把会话目录拷进桌面版时可以直接连 `.drafts` 一起删掉。
 
 ## 标签集：导入 / 导出 / 跨端复用
 
@@ -205,6 +248,10 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 | DELETE | `/api/sessions/{s}/images/{name}` | 删除图像及其同名 `.json` |
 | GET | `/api/sessions/{s}/annotations/{name}` | 读标注（无则 404） |
 | PUT | `/api/sessions/{s}/annotations/{name}` | 写标注，原子替换，强制 `imagePath=name` |
+| PUT | `/api/sessions/{s}/drafts/{name}` | 写崩溃草稿（`fsync` 落盘），body `{shapes,flags,imageWidth,imageHeight,at}` |
+| GET | `/api/sessions/{s}/drafts/{name}` | 读草稿，附带 `stale`（标注比草稿新则为 true） |
+| DELETE | `/api/sessions/{s}/drafts/{name}` | 删除草稿（保存成功后前端会调用） |
+| GET | `/api/recent` | 最近一次动过的会话/图像，供强杀、蓝屏后接回 |
 | GET | `/api/labels` | 读项目标签集（`data/labels.txt`） |
 | PUT | `/api/labels` | 写项目标签集，body `{"labels":[...]}` |
 
