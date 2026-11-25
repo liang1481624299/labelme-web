@@ -41,7 +41,7 @@ if [[ "${SRC_DIR}" != "${APP_DIR}" ]]; then
   mkdir -p "${APP_DIR}"
   if command -v rsync >/dev/null; then
     rsync -a --delete \
-      --exclude '.venv' --exclude 'data' --exclude '__pycache__' \
+      --exclude '.venv' --exclude 'data' --exclude 'var' --exclude '__pycache__' \
       "${SRC_DIR}/" "${APP_DIR}/"
   else
     cp -a "${SRC_DIR}/." "${APP_DIR}/"
@@ -50,7 +50,7 @@ else
   log "源码已位于 ${APP_DIR}"
 fi
 
-mkdir -p "${APP_DIR}/data"
+mkdir -p "${APP_DIR}/data" "${APP_DIR}/var"
 
 # ---------------------------------------------------------------- Python 环境
 log "创建 venv 并安装依赖"
@@ -61,9 +61,10 @@ python3 -m venv "${APP_DIR}/.venv"
 # ---------------------------------------------------------------- 权限
 log "设置归属与权限"
 chown -R root:root "${APP_DIR}"
-chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}/data"
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}/data" "${APP_DIR}/var"
 chmod 755 "${APP_DIR}"
 chmod 755 "${APP_DIR}/data"
+chmod 750 "${APP_DIR}/var"
 
 # ---------------------------------------------------------------- systemd
 log "安装 systemd 单元"
@@ -95,10 +96,12 @@ cat <<EOF
 
   安装目录   ${APP_DIR}
   会话数据   ${APP_DIR}/data/<YYYYMMDDHHMMSS>/
+  账号库     ${APP_DIR}/var/labelme-web.db（bcrypt 哈希，无明文）
   前端端口   9630（NGINX）
   后端端口   9631（systemd，仅本机 127.0.0.1）
   服务单元   systemctl status ${SERVICE_NAME}
   日志       journalctl -u ${SERVICE_NAME} -f
-  访问       http://<服务器IP>:9630/
+  访问       http://<服务器IP>:9630/  （首次打开会跳登录页，第一个注册的账号即管理员）
+  管理面板   http://<服务器IP>:9630/admin  （只能手敲链接，标注页没有入口）
 
 EOF

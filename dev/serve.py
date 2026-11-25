@@ -52,7 +52,12 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------- 静态文件
     def _serve_static(self, head_only: bool = False) -> None:
         path = unquote(self.path.split("?")[0].split("#")[0])
-        if path == "/":
+        # 页面路由：/login、/admin 是独立页面，不能回退成 index.html
+        pages = {"/login": "/login.html", "/login/": "/login.html",
+                 "/admin": "/admin.html", "/admin/": "/admin.html"}
+        if path in pages:
+            path = pages[path]
+        elif path == "/":
             path = "/index.html"
         target = (FRONTEND / path.lstrip("/")).resolve()
         try:

@@ -1,6 +1,7 @@
 .venv/
 data/*
 !data/.gitkeep
+var/
 __pycache__/
 *.pyc
 *.log

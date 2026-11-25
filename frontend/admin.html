@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>账号管理 · Labelme</title>
+  <link rel="stylesheet" href="auth.css" />
+</head>
+<body class="admin-body">
+<div class="admin-wrap">
+  <div class="admin-head">
+    <h1>账号管理</h1>
+    <span class="who" id="who">—</span>
+    <span class="spacer"></span>
+    <button class="btn" id="btnBack" type="button">回到标注页</button>
+    <button class="btn btn-danger" id="btnLogout" type="button">退出登录</button>
+  </div>
+
+  <section class="panel">
+    <header>概览</header>
+    <div class="panel-body stats">
+      <div class="stat"><b id="statUsers">—</b><span>账号总数</span></div>
+      <div class="stat"><b id="statEnabled">—</b><span>启用中</span></div>
+      <div class="stat"><b id="statAdmins">—</b><span>管理员</span></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header>新建账号</header>
+    <div class="panel-body">
+      <form class="form-row" id="createForm">
+        <label>账号
+          <input id="newUsername" type="text" placeholder="2–32 位" autocomplete="off" />
+        </label>
+        <label>初始密码
+          <input id="newPassword" type="password" placeholder="至少 8 位" autocomplete="new-password" />
+        </label>
+        <label>角色
+          <select id="newRole">
+            <option value="annotator">标注员</option>
+            <option value="admin">管理员</option>
+          </select>
+        </label>
+        <button class="btn btn-primary" id="btnCreate" type="submit">创建</button>
+      </form>
+      <div class="admin-msg" id="createMsg"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header>
+      <span>账号列表</span>
+      <span class="spacer"></span>
+      <label class="switch">
+        <input type="checkbox" id="allowRegistration" />
+        允许自助注册
+      </label>
+    </header>
+    <div class="panel-body">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>账号</th><th>角色</th><th>状态</th><th>创建时间</th><th>最后登录</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="userRows"></tbody>
+      </table>
+      <div class="admin-msg" id="listMsg"></div>
+    </div>
+  </section>
+</div>
+<script src="admin.js"></script>
+</body>
+</html>

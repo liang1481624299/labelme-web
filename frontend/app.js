@@ -44,7 +44,7 @@ function round2(v) {
 }
 
 async function req(method, path, body, isForm) {
-  const opts = { method, headers: {} };
+  const opts = { method, headers: {}, credentials: 'same-origin' };
   if (body && isForm) {
     opts.body = body;
   } else if (body !== undefined && body !== null) {
@@ -52,6 +52,13 @@ async function req(method, path, body, isForm) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(path, opts);
+  if (res.status === 401) {
+    // 登录态过期：先落到登录页，标注草稿已在服务端，回来还能接上
+    location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+    const err = new Error('登录已过期，请重新登录');
+    err.status = 401;
+    throw err;
+  }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try {
@@ -1667,6 +1674,8 @@ const MENUS = [
       { id: 'saveAs', label: '另存为 JSON…', sc: 'Ctrl+Shift+S' },
       { sep: true },
       { id: 'deleteImage', label: '删除当前图像…' },
+      { sep: true },
+      { id: 'logout', label: '退出登录' },
     ],
   },
   {
@@ -1899,6 +1908,9 @@ function runAction(id) {
     case 'deleteImage':
       deleteCurrentImage();
       break;
+    case 'logout':
+      logoutUser();
+      break;
     case 'undo':
       undo();
       break;
@@ -1957,6 +1969,16 @@ function pickFiles(multiple) {
 }
 
 /* ---------------------------------------------------------------- modals */
+async function logoutUser() {
+  try {
+    if (state.dirty && state.image) await saveNow(true);
+  } catch (e) { /* 保存失败也照常退出，草稿还在服务器 */ }
+  try {
+    await req('POST', '/api/auth/logout');
+  } catch (e) { /* ignore */ }
+  location.replace('/login');
+}
+
 async function createNewSessionFromMenu() {
   try {
     if (state.dirty && state.image) await saveNow(true);
@@ -2293,6 +2315,13 @@ async function reloadImageCanvas() {
 }
 
 async function boot() {
+  try {
+    const meRes = await req('GET', '/api/auth/me');
+    const su = $('statusUser');
+    if (su && meRes && meRes.user) su.textContent = meRes.user.username;
+  } catch (e) {
+    if (e.status === 401) return; // 正在跳登录页
+  }
   await loadLabels();
   buildMenubar();
   buildToolbar();

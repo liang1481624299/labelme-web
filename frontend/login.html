@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>登录 · Labelme</title>
+  <link rel="stylesheet" href="auth.css" />
+</head>
+<body class="auth-body">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="dot"></span>
+      <span>Labelme</span>
+      <span class="ver">7.11.0</span>
+    </div>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-tab="login" type="button">登录</button>
+      <button class="auth-tab" data-tab="register" type="button">注册</button>
+    </div>
+
+    <form id="authForm" autocomplete="on" novalidate>
+      <label class="field">
+        <span>账号</span>
+        <input id="username" name="username" type="text" autocomplete="username"
+               placeholder="2–32 位，中英文 / 数字 / _ - ." required />
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input id="password" name="password" type="password" autocomplete="current-password"
+               placeholder="至少 8 位" required />
+      </label>
+      <p class="auth-hint" id="registerHint" hidden>
+        第一次注册的账号会自动成为管理员；之后注册的都是普通标注员（需管理员启用后可用）。
+      </p>
+      <div class="auth-error" id="authError" hidden></div>
+      <button class="auth-submit" id="authSubmit" type="submit">登录</button>
+    </form>
+
+    <p class="auth-foot">
+      登录后才能进入标注页；账号由管理员统一维护。
+    </p>
+  </div>
+  <script src="login.js"></script>
+</body>
+</html>

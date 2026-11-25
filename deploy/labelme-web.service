@@ -10,6 +10,7 @@ User=labelme
 Group=labelme
 WorkingDirectory=/opt/labelme-web
 Environment=LABELME_WEB_MAX_UPLOAD_MB=200
+Environment=LABELME_WEB_DB=/opt/labelme-web/var/labelme-web.db
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/labelme-web/.venv/bin/uvicorn backend.app:app --host 127.0.0.1 --port 9631 --workers 2 --proxy-headers --forwarded-allow-ips=127.0.0.1
@@ -19,8 +20,8 @@ Restart=always
 RestartSec=3
 TimeoutStopSec=20
 
-# data/ 是唯一需要写入的位置
-ReadWritePaths=/opt/labelme-web/data
+# data/ 存标注、var/ 存账号库，是唯一需要写入的两处
+ReadWritePaths=/opt/labelme-web/data /opt/labelme-web/var
 
 # 安全加固
 NoNewPrivileges=true

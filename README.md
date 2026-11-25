@@ -12,20 +12,28 @@
 ```
 labelme-web/
 ├── backend/
-│   ├── app.py            # HTTP API + 静态托管（唯一后端文件）
+│   ├── app.py            # HTTP API + 静态托管 + 页面路由
+│   ├── auth.py           # 账号库（SQLite）、bcrypt、登录态、/admin 接口
 │   └── requirements.txt
 ├── frontend/
-│   ├── index.html
+│   ├── index.html        # 标注页（需登录）
 │   ├── styles.css
-│   └── app.js
+│   ├── app.js
+│   ├── login.html        # 登录 / 注册页
+│   ├── login.js
+│   ├── admin.html        # /admin 管理面板（无入口，只能手敲链接）
+│   ├── admin.js
+│   └── auth.css          # 登录页与管理面板样式
 ├── dev/
 │   └── serve.py          # 本地开发前置：9630 静态 + /api 反代到 9631
-├── data/                 # 会话数据，运行时生成，删掉会自动重建
+├── data/                 # 标注会话数据，运行时生成，删掉会自动重建
 │   ├── labels.txt        # 项目级标签集（每行一个，可导入/导出）
 │   └── 20260101013030/   # 一个浏览器会话一个文件夹
 │       ├── 114.jpg
 │       ├── 114.json
 │       └── .drafts/      # 崩溃草稿，正常保存后自动删除
+├── var/
+│   └── labelme-web.db    # 账号库（bcrypt 哈希），运行时生成，不进 Git
 ├── deploy/
 │   ├── nginx.conf
 │   ├── labelme-web.service
@@ -92,6 +100,40 @@ data/20260101013030/114.json    ← 该图的标注
 > 顺带说明为什么不用浏览器指纹：指纹会随浏览器升级、隐私开关、多设备而变，
 > 会导致「同一个人的标注突然分裂成好几个文件夹」；而且它属于隐私敏感信息，不适合拿来当目录主键。
 > 这里要的语义是「一次标注会话一个文件夹」，随机会话 id + 失效自愈比指纹更稳、更可控。
+
+## 账号、登录与权限
+
+打开 `http://<host>:9630/` 先看到登录页，登录后才进标注页；未登录访问任何页面都会跳
+`/login?next=...`，所有 `/api/*`（除登录/注册/健康检查）都要求登录。
+
+- 账号库：`var/labelme-web.db`（SQLite，可用 `LABELME_WEB_DB` 改路径）。放在 `var/` 而不是
+  `data/`，因为 `data/` 是标注运行目录、删了会自愈，账号不能跟着一起没。
+- 密码：**只存 bcrypt 哈希**（`$2b$12$...`，cost 12），库里没有明文，日志也不打密码。
+  密码 8 位起，最长 72 字节（bcrypt 上限，超了直接拒绝，不悄悄截断）。
+- 登录态：服务端随机 token，cookie `lmweb_session`（HttpOnly / SameSite=Lax，7 天），
+  库里只存 token 的 sha256；改角色、禁用、改密码都会立刻作废旧登录态。
+- 角色两级：
+  - `admin`：能进 `/admin` 管账号；
+  - `annotator`：只能标注，访问 `/admin` 返回 403。
+- **第一个注册的账号自动成为管理员**；之后注册的都是标注员。管理员可以关掉“允许自助注册”，
+  也可以直接建号。
+- 失败次数限制：同一 IP + 账号 5 分钟内失败 6 次，锁 60 秒。
+
+### /admin 管理面板
+
+得手敲 `http://<host>:9630/admin`，**标注页和登录页都没有任何入口/链接**；服务端还会再校验一次
+角色（未登录跳登录页，非管理员 403）。面板能做：
+
+- 看账号总数 / 启用数 / 管理员数；
+- 新建账号（指定角色与初始密码）；
+- 改角色、禁用/启用（禁用会立即踢掉该账号已登录的会话）；
+- 重置密码（同样踢掉旧会话，自己改自己保留当前登录）；
+- 删除账号；
+- 开/关“允许自助注册”。
+
+两个保护：不能禁用/删除自己；系统至少保留一个启用的管理员。
+
+标注页只多了一个「文件 → 退出登录」和状态栏右下角的当前账号名，没有管理相关按钮。
 
 ## 崩溃 / 强杀 / 蓝屏后的会话恢复
 
@@ -183,8 +225,10 @@ python -m uvicorn backend.app:app --host 127.0.0.1 --port 9631 --reload
 python dev/serve.py            # 默认 --port 9630 --api http://127.0.0.1:9631
 ```
 
-浏览器打开 <http://127.0.0.1:9630>。改 `frontend/` 下的文件刷新即生效，不用重启；
-改 `backend/app.py` 由 uvicorn `--reload` 自动重载。
+浏览器打开 <http://127.0.0.1:9630> 会先到登录页：第一次用点「注册」建管理员账号（第一个账号自动是
+管理员），之后就能进标注页。改 `frontend/` 下的文件刷新即生效，不用重启；
+改 `backend/` 下的 Python 由 uvicorn `--reload` 自动重载（Windows 上偶尔会卡在 Reloading，
+直接杀掉重开更省事）。
 
 Windows 上把 `python3` 换成 `python`（或解释器绝对路径），其余命令一样：
 
@@ -221,7 +265,12 @@ sudo nginx -t && sudo systemctl reload nginx
 上传体积上限改两处：`/etc/nginx/sites-available/labelme-web` 的 `client_max_body_size`，
 与 `labelme-web.service` 里的 `LABELME_WEB_MAX_UPLOAD_MB`（默认 200 MB）。
 
-HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块即可，后端不需要改。
+HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块即可，后端不需要改；
+登录 cookie 会自动按 `X-Forwarded-Proto: https` 加上 `Secure`（也可用
+`LABELME_WEB_COOKIE_SECURE=1` 强制）。
+
+账号库在 `var/labelme-web.db`（systemd 单元里 `LABELME_WEB_DB` 指过去，`ReadWritePaths` 含 `var`），
+备份时和 `data/` 一起拷走就行。
 
 ## 功能对标
 
@@ -241,7 +290,18 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | 健康检查，返回 `{"status":"ok","labelme":"7.11.0"}` |
+| GET | `/api/health` | 健康检查，返回 `{"status":"ok","labelme":"7.11.0"}`（无需登录） |
+| POST | `/api/auth/register` | 注册，body `{username,password}`；首个账号 = 管理员 |
+| POST | `/api/auth/login` | 登录，成功后下发 `lmweb_session` cookie |
+| POST | `/api/auth/logout` | 退出登录并删掉服务端 token |
+| GET | `/api/auth/me` | 当前账号 `{user:{id,username,role,enabled}}` |
+| GET | `/api/admin/users` | 账号列表（仅管理员） |
+| POST | `/api/admin/users` | 新建账号 `{username,password,role}` |
+| PATCH | `/api/admin/users/{id}` | 改角色 / 启停 / 重置密码 |
+| DELETE | `/api/admin/users/{id}` | 删除账号 |
+| GET | `/api/admin/settings` | `{allow_registration}` |
+| PUT | `/api/admin/settings` | 开关自助注册 |
+| GET | `/api/admin/overview` | 账号总数 / 启用数 / 管理员数 |
 | POST | `/api/sessions` | 新建会话目录，返回 `{"session":"20260101013030"}` |
 | GET | `/api/sessions` | 会话列表（图像数 / 已标注数 / 创建时间） |
 | POST | `/api/sessions/{s}/images` | 上传图像，multipart 字段名 `files`，可多文件，重名自动加 `-1` |

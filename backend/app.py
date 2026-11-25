@@ -21,9 +21,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import Body, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+
+from backend import auth
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -54,6 +56,11 @@ def ensure_data_dir() -> Path:
 
 
 app = FastAPI(title="labelme-web", docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+# 账号：所有 /api/* （除登录/注册/健康检查）都要求登录，页面层再做一次拦截
+app.middleware("http")(auth.auth_guard)
+app.include_router(auth.router)
+app.include_router(auth.admin_router)
 
 
 # ---------------------------------------------------------------- helpers
@@ -419,6 +426,35 @@ def put_labels(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     labels = _normalize_labels(items)
     write_labels(labels)
     return {"labels": labels, "count": len(labels), "path": "data/labels.txt"}
+
+
+# ---------------------------------------------------------------- pages
+@app.get("/", include_in_schema=False)
+def page_index(request: Request) -> Response:
+    """未登录不进标注页，直接送登录页。"""
+    if auth.user_from_request(request) is None:
+        target = "/login?next=/" + (("?" + request.url.query) if request.url.query else "")
+        return RedirectResponse(target, status_code=302)
+    return FileResponse(str(FRONTEND_DIR / "index.html"), media_type="text/html")
+
+
+@app.get("/login", include_in_schema=False)
+def page_login(request: Request) -> Response:
+    if auth.user_from_request(request) is not None:
+        nxt = request.query_params.get("next") or "/"
+        if not nxt.startswith("/") or nxt.startswith("//"):
+            nxt = "/"
+        return RedirectResponse(nxt, status_code=302)
+    return FileResponse(str(FRONTEND_DIR / "login.html"), media_type="text/html")
+
+
+@app.get("/admin", include_in_schema=False)
+def page_admin(request: Request) -> Response:
+    """管理面板只能手敲 /admin 进来：服务端校验角色，前端不放任何入口。"""
+    row = auth.user_from_request(request)
+    if row is None:
+        return RedirectResponse("/login?next=/admin", status_code=302)
+    return auth.admin_page(row)
 
 
 # ---------------------------------------------------------------- static frontend
