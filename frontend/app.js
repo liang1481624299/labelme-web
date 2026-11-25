@@ -435,18 +435,20 @@ function shapeHit(shape, pt) {
 }
 
 function hitTestShape(pt) {
+  const p = Array.isArray(pt) ? pt : [pt.x, pt.y];
   for (let i = state.shapes.length - 1; i >= 0; i--) {
-    if (shapeHit(state.shapes[i], pt)) return i;
+    if (shapeHit(state.shapes[i], p)) return i;
   }
   return -1;
 }
 
 function hitTestVertex(shape, pt) {
   const tol = 7 / view.zoom;
+  const p = Array.isArray(pt) ? pt : [pt.x, pt.y];
   let best = -1;
   let bestD = tol;
-  shape.points.forEach((p, i) => {
-    const d = dist2(p, pt);
+  shape.points.forEach((q, i) => {
+    const d = dist2(q, p);
     if (d <= bestD) {
       bestD = d;
       best = i;
@@ -916,9 +918,12 @@ canvas.addEventListener('pointerup', (ev) => {
     return;
   }
 
-  // drag-based creation: rectangle & line & circle release finishes 2-point shape
+  // 拖拽创建矩形/直线：松手时如果确实拖动过就完成；没拖动则保留起点等第二下点击
   if (state.drawing && ['rectangle', 'line'].includes(state.drawing.type)) {
-    finishDrawing();
+    const d = state.drawing;
+    const moved = d.cursor && d.points.length === 1
+      && dist2(d.points[0], d.cursor) >= 2 / view.zoom;
+    if (moved) finishDrawing();
   }
 });
 
@@ -945,12 +950,16 @@ canvas.addEventListener('wheel', (ev) => {
 }, { passive: false });
 
 function handleDrawClick(tool, pt, ev) {
-  // drag creation for rectangle / line
+  // 矩形/直线：既支持按住拖拽，也支持“点一下起点、再点一下终点”
   if (tool === 'rectangle' || tool === 'line') {
     if (!state.drawing) {
       state.drawing = { type: tool, points: [[pt.x, pt.y]], cursor: [pt.x, pt.y] };
       redraw();
+      return;
     }
+    // 第二次点击：补上终点并完成（拖拽路径在 pointerup 里已经 finish 了）
+    state.drawing.points.push([pt.x, pt.y]);
+    finishDrawing();
     return;
   }
 
@@ -1439,8 +1448,11 @@ async function switchProject(name) {
   resetSessionState();
   await loadLabels();
   const sessions = await listSessions();
-  if (sessions.length) {
-    await loadSession(sessions[0].session, null);
+  // 优先接回这个工程里“有图”的最近会话，避免切工程后落在空会话上（没图就画不了）
+  const withImages = sessions.filter((s) => s.images > 0);
+  const next = withImages[0] || sessions[0];
+  if (next) {
+    await loadSession(next.session, null);
   } else {
     await newSession();
   }
@@ -1595,7 +1607,10 @@ async function loadSession(id, preferredImage) {
 }
 
 async function listSessions() {
-  return await req('GET', '/api/sessions' + projectQuery());
+  const res = await req('GET', '/api/sessions' + projectQuery());
+  // 后端契约是数组；这里兼容一下旧版 {sessions:[...]}，避免任一版本升级错位把列表弄空
+  if (Array.isArray(res)) return res;
+  return (res && Array.isArray(res.sessions)) ? res.sessions : [];
 }
 
 async function uploadFiles(files) {

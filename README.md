@@ -338,7 +338,7 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 | GET | `/api/projects` | 当前账号的工程列表；`?owner=` 指定账号，管理员可用 `?scope=all` 看全部 |
 | POST | `/api/projects` | 新建工程 `{name,owner?}`（普通账号只能建自己的） |
 | POST | `/api/sessions` | 在 `?owner=&project=` 下新建会话目录，返回 `{session,owner,project}` |
-| GET | `/api/sessions` | 会话列表，支持 `?owner=&project=`（普通账号只能看自己的；管理员不传 owner 看全部） |
+| GET | `/api/sessions` | 会话列表（**JSON 数组**），支持 `?owner=&project=`（普通账号只能看自己的；管理员不传 owner 看全部） |
 | POST | `/api/sessions/{s}/images` | 上传图像，multipart 字段名 `files`，可多文件，重名自动加 `-1` |
 | GET | `/api/sessions/{s}/images` | 会话内图像列表 |
 | GET | `/api/sessions/{s}/raw/{name}` | 取原图 |

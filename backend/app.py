@@ -186,7 +186,10 @@ def create_session(request: Request, owner: Optional[str] = None, project: Optio
 
 
 @app.get("/api/sessions")
-def list_sessions(request: Request, owner: Optional[str] = None, project: Optional[str] = None) -> Dict[str, Any]:
+def list_sessions(
+    request: Request, owner: Optional[str] = None, project: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """会话列表。返回**数组**（不是 {sessions:[...]}），和旧版接口保持一致。"""
     workspace.auto_migrate()
     user = auth.current_user(request)
     if owner:
@@ -202,7 +205,7 @@ def list_sessions(request: Request, owner: Optional[str] = None, project: Option
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     items = workspace.list_sessions(target_owner, target_project)
-    return {"sessions": items}
+    return items
 
 
 @app.get("/api/recent")
