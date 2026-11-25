@@ -21,6 +21,7 @@ labelme-web/
 ├── dev/
 │   └── serve.py          # 本地开发前置：9630 静态 + /api 反代到 9631
 ├── data/                 # 会话数据，运行时生成，删掉会自动重建
+│   ├── labels.txt        # 项目级标签集（每行一个，可导入/导出）
 │   └── 20260101013030/   # 一个浏览器会话一个文件夹
 │       ├── 114.jpg
 │       └── 114.json
@@ -73,6 +74,45 @@ data/20260101013030/114.json    ← 该图的标注
 
 `imagePath` 始终是同目录的文件名（相对），`imageData` 为 `null`（原图就在旁边，不重复存 base64）。
 把整个会话目录拷进桌面版 labelme →「打开文件夹」，回读的标注与 Web 端一致，反之亦然。
+
+## 会话失效与自愈
+
+会话 id 存在浏览器 `sessionStorage`，目录存在服务器，两边可能对不上：清空 `data/`、换机器、
+别人清理旧会话之后，老标签页手里的 id 就成了悬空引用（报 `session not found`）。现在的处理是：
+
+- 页面启动时探活：会话不存在就直接新建一个，不会停在错误页；
+- 上传文件夹前先探活（`ensureSessionAlive()`），发现目录没了就新建会话再上传；
+- 保存标注收到 404 时就地重建会话并提示「原会话目录已不存在」，不再把 404 丢给你；
+- 用 `?session=xxx` 打开一个已被删掉的会话，会提示并新建，而不是卡住。
+
+界面上会弹一句「原会话目录已不存在，已切换到新会话 2026…」，不打断操作。
+
+> 顺带说明为什么不用浏览器指纹：指纹会随浏览器升级、隐私开关、多设备而变，
+> 会导致「同一个人的标注突然分裂成好几个文件夹」；而且它属于隐私敏感信息，不适合拿来当目录主键。
+> 这里要的语义是「一次标注会话一个文件夹」，随机会话 id + 失效自愈比指纹更稳、更可控。
+
+## 标签集：导入 / 导出 / 跨端复用
+
+标签集是**项目级**的，落在 `data/labels.txt`（UTF-8，每行一个标签）：
+
+- 界面位置：右侧「标签列表」标题栏的 **编辑…** → 弹窗里有 **导入…** / **导出 labels.txt**；
+- 导入支持 `.txt` 和 `.json`：
+  - `.txt`：每行一个；忽略空行、`#` 与 `//` 注释；
+  - 兼容带颜色的行，下面三种都会只取标签名：`sensor, 0, 128, 0`、`pin,255,0,0,255`、`led: #ff0000`；
+  - `.json`：`["a","b"]` 或 `{"labels": ["a","b"]}`；
+- 导入是**合并**（已有的不重复、不覆盖），导出就是一份标准 `labels.txt`；
+- 标注时输入框带下拉补全（datalist），也可直接点下方常用标签；
+- 打开已有 `.json` 标注时，里面出现过的 label 会自动汇总进标签集，等于「从旧标注反推标签表」；
+- 桌面版 labelme 可以直接复用同一份标签：
+
+```bash
+labelme data/20260101013030 --labels data/labels.txt
+```
+
+> 注意：`data/labels.txt` 在 `data/` 里，所以清空 `data/` 会连同标签集一起清掉——
+> 这也意味着「拷走 `data/`」就等于带走全部标注和标签表。
+
+接口：`GET /api/labels`、`PUT /api/labels`（body `{"labels": [...]}`，服务端会去空、去重、截断超长）。
 
 ## 端口约定
 
@@ -165,5 +205,7 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 | DELETE | `/api/sessions/{s}/images/{name}` | 删除图像及其同名 `.json` |
 | GET | `/api/sessions/{s}/annotations/{name}` | 读标注（无则 404） |
 | PUT | `/api/sessions/{s}/annotations/{name}` | 写标注，原子替换，强制 `imagePath=name` |
+| GET | `/api/labels` | 读项目标签集（`data/labels.txt`） |
+| PUT | `/api/labels` | 写项目标签集，body `{"labels":[...]}` |
 
 `/api/docs` 有 FastAPI 自带的可交互文档（若不想暴露，可在 NGINX 里单独 `location /api/docs { deny all; }`）。

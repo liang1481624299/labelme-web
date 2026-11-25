@@ -30,6 +30,9 @@ DATA_DIR = BASE_DIR / "data"
 FRONTEND_DIR = BASE_DIR / "frontend"
 MAX_UPLOAD_MB = int(os.environ.get("LABELME_WEB_MAX_UPLOAD_MB", "200"))
 LABELME_VERSION = "7.11.0"
+LABELS_FILE = DATA_DIR / "labels.txt"
+LABELS_MAX = 500
+LABEL_MAXLEN = 120
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp"}
 SESSION_RE = re.compile(r"^\d{14}(_\d+)?$")
@@ -242,6 +245,58 @@ def put_annotation(
             normalized[key] = value
     write_json_atomic(folder / (name + ".json"), normalized)
     return {"saved": name + ".json", "shapes": len(shapes)}
+
+
+# ---------------------------------------------------------------- label set
+def _normalize_labels(items: List[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for raw in items:
+        label = str(raw).replace("\r", " ").replace("\n", " ").strip()
+        if not label or label in seen:
+            continue
+        if len(label) > LABEL_MAXLEN:
+            label = label[:LABEL_MAXLEN]
+        seen.add(label)
+        out.append(label)
+        if len(out) >= LABELS_MAX:
+            break
+    return out
+
+
+def read_labels() -> List[str]:
+    ensure_data_dir()
+    if not LABELS_FILE.is_file():
+        return []
+    text = LABELS_FILE.read_text(encoding="utf-8", errors="replace")
+    return _normalize_labels([line for line in text.splitlines()])
+
+
+def write_labels(labels: List[str]) -> None:
+    ensure_data_dir()
+    body = "\n".join(labels)
+    if body:
+        body += "\n"
+    tmp = LABELS_FILE.with_suffix(".txt.tmp")
+    tmp.write_text(body, encoding="utf-8")
+    os.replace(tmp, LABELS_FILE)
+
+
+@app.get("/api/labels")
+def get_labels() -> Dict[str, Any]:
+    """项目级标签集，落在 data/labels.txt（每行一个），桌面版可 --labels 直接复用。"""
+    labels = read_labels()
+    return {"labels": labels, "count": len(labels), "path": "data/labels.txt"}
+
+
+@app.put("/api/labels")
+def put_labels(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    items = payload.get("labels")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="labels must be a list of strings")
+    labels = _normalize_labels(items)
+    write_labels(labels)
+    return {"labels": labels, "count": len(labels), "path": "data/labels.txt"}
 
 
 # ---------------------------------------------------------------- static frontend

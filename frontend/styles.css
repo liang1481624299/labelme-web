@@ -378,11 +378,12 @@ canvas { display: block; width: 100%; height: 100%; }
 }
 #labelInput:focus { border-color: var(--accent); }
 
-.recent { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.recent { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; max-height: 148px; overflow: auto; }
 .recent button {
   padding: 3px 9px;
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px;
   color: var(--text); font: inherit; font-size: 12px; cursor: default;
+  white-space: nowrap;
 }
 .recent button:hover { background: var(--hover); }
 

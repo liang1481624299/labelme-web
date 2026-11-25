@@ -540,6 +540,10 @@ async function saveNow(silent) {
     updateStatus();
     if (!silent) toast(`已保存 ${target}.json`);
   } catch (e) {
+    if (e.status === 404 && /session/i.test(e.message)) {
+      await newSession(`保存时找不到会话目录（${target} 已随目录一起没了）`);
+      return;
+    }
     toast(`保存失败：${e.message}`, true);
   } finally {
     state.saving = false;
@@ -659,13 +663,27 @@ function addLabel(label) {
   }
 }
 
+let labelsTimer = null;
+
+/** 标签集是项目级的，存服务端 data/labels.txt（每行一个），浏览器只留一份缓存。 */
 function saveLabels() {
   try {
     localStorage.setItem(STORE_LABELS, JSON.stringify(state.labels));
   } catch (e) { /* ignore */ }
+  clearTimeout(labelsTimer);
+  labelsTimer = setTimeout(pushLabels, 500);
 }
 
-function loadLabels() {
+async function pushLabels() {
+  try {
+    await req('PUT', '/api/labels', { labels: state.labels });
+  } catch (e) {
+    toast(`标签集保存失败：${e.message}`, true);
+  }
+}
+
+async function loadLabels() {
+  // 先读本地缓存，避免首屏空标签
   try {
     const raw = localStorage.getItem(STORE_LABELS);
     if (raw) {
@@ -673,6 +691,82 @@ function loadLabels() {
       if (Array.isArray(arr)) state.labels = arr.filter((x) => typeof x === 'string');
     }
   } catch (e) { /* ignore */ }
+  // 服务端为准
+  try {
+    const res = await req('GET', '/api/labels');
+    if (res && Array.isArray(res.labels)) state.labels = res.labels;
+  } catch (e) { /* 后端没起来时继续用缓存 */ }
+  refreshLabelList();
+}
+
+/** 解析导入的标签文件：.txt 每行一个；.json 支持 ["a","b"] 或 {"labels":[...]} */
+function parseLabelFile(text, filename) {
+  const raw = text.replace(/^\uFEFF/, '');
+  if (/\.json$/i.test(filename)) {
+    try {
+      const data = JSON.parse(raw);
+      const arr = Array.isArray(data) ? data : data && Array.isArray(data.labels) ? data.labels : null;
+      if (arr) return arr.filter((x) => typeof x === 'string').map((x) => x.trim()).filter(Boolean);
+    } catch (e) {
+      throw new Error('JSON 解析失败');
+    }
+    throw new Error('JSON 里没有标签数组');
+  }
+  const out = [];
+  raw.split(/\r?\n/).forEach((line) => {
+    let s = line.trim();
+    if (!s || s.startsWith('#') || s.startsWith('//')) return;
+    // 兼容带颜色的行：label, 255, 0, 0 / label,255,0,0,255 / label: #ff0000
+    s = s.replace(/\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(\s*,\s*\d{1,3})?\s*$/, '');
+    s = s.replace(/\s*[,:]\s*#?[0-9a-fA-F]{3,8}\s*$/, '');
+    s = s.trim();
+    if (s) out.push(s);
+  });
+  return out;
+}
+
+async function importLabelsFile(file) {
+  try {
+    const text = await file.text();
+    const incoming = parseLabelFile(text, file.name);
+    const before = state.labels.length;
+    mergeLabels(incoming);
+    await pushLabels();
+    refreshLabelList();
+    openLabelManage();
+    toast(`导入 ${incoming.length} 个标签，新增 ${state.labels.length - before} 个`);
+  } catch (e) {
+    toast(`导入失败：${e.message}`, true);
+  }
+}
+
+function mergeLabels(list) {
+  let added = 0;
+  (list || []).forEach((label) => {
+    const s = String(label).trim();
+    if (!s) return;
+    if (!state.labels.includes(s)) {
+      state.labels.push(s);
+      added += 1;
+    }
+  });
+  if (added) saveLabels();
+  return added;
+}
+
+function exportLabels() {
+  if (!state.labels.length) {
+    toast('标签集是空的，没有可导出的内容', true);
+    return;
+  }
+  const blob = new Blob([state.labels.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'labels.txt';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
 /* --------------------------------------------------------------- pointer */
@@ -938,17 +1032,32 @@ function askLabel(defaultValue, cb) {
   const modal = $('labelModal');
   const input = $('labelInput');
   input.value = defaultValue || '';
+
+  // 全部标签进 datalist（输入时可下拉选择，等价桌面版的 label 下拉框）
+  const datalist = $('labelDatalist');
+  datalist.innerHTML = '';
+  state.labels.forEach((l) => {
+    const opt = document.createElement('option');
+    opt.value = l;
+    datalist.appendChild(opt);
+  });
+
   const recent = $('recentLabels');
   recent.innerHTML = '';
-  state.labels.slice(-12).reverse().forEach((l) => {
-    const b = document.createElement('button');
-    b.textContent = l;
-    b.addEventListener('click', () => {
-      input.value = l;
-      input.focus();
+  state.labels
+    .slice()
+    .reverse()
+    .slice(0, 60)
+    .forEach((l) => {
+      const b = document.createElement('button');
+      b.textContent = l;
+      b.addEventListener('click', () => {
+        input.value = l;
+        input.focus();
+      });
+      recent.appendChild(b);
     });
-    recent.appendChild(b);
-  });
+
   modal.hidden = false;
   setTimeout(() => {
     input.focus();
@@ -1064,8 +1173,48 @@ function updateStatus() {
 }
 
 /* --------------------------------------------------------------- sessions */
+function resetSessionState() {
+  state.image = null;
+  state.shapes = [];
+  state.selected = -1;
+  state.images = [];
+  state.undo = [];
+  state.redo = [];
+  state.drawing = null;
+  state.drag = null;
+  state.dirty = false;
+}
+
+async function newSession(reason) {
+  const res = await req('POST', '/api/sessions');
+  state.sessionId = res.session;
+  sessionStorage.setItem(STORE_SESSION, res.session);
+  resetSessionState();
+  state.images = (await req('GET', `/api/sessions/${res.session}/images`)).images || [];
+  showEmpty(state.images.length === 0);
+  refreshDocks();
+  refreshImageList();
+  updateStatus();
+  redraw();
+  if (reason) toast(`${reason}，已切换到新会话 ${res.session}`, true);
+  return res.session;
+}
+
+/** 会话目录可能在服务器上被删掉（清空 data/、换机器、他人清理），
+ *  浏览器 sessionStorage 里的 id 就成了悬空引用。这里先探活，失效就地重建。 */
+async function ensureSessionAlive(reason) {
+  if (!state.sessionId) return await newSession();
+  try {
+    await req('GET', `/api/sessions/${state.sessionId}/images`);
+    return state.sessionId;
+  } catch (e) {
+    if (e.status === 404) return await newSession(reason || '原会话目录已不存在');
+    throw e;
+  }
+}
+
 async function ensureSession() {
-  let id = sessionStorage.getItem(STORE_SESSION);
+  const id = sessionStorage.getItem(STORE_SESSION);
   if (id) {
     try {
       await req('GET', `/api/sessions/${id}/images`);
@@ -1075,10 +1224,7 @@ async function ensureSession() {
       if (e.status !== 404) throw e;
     }
   }
-  const res = await req('POST', '/api/sessions');
-  state.sessionId = res.session;
-  sessionStorage.setItem(STORE_SESSION, res.session);
-  return res.session;
+  return await newSession();
 }
 
 async function loadSession(id) {
@@ -1110,11 +1256,23 @@ async function uploadFiles(files) {
     toast('没有可用的图像文件（jpg/png/bmp/webp…）', true);
     return;
   }
-  if (!state.sessionId) await ensureSession();
   const form = new FormData();
   picked.forEach((f) => form.append('files', f, f.name));
+  const doUpload = () => req('POST', `/api/sessions/${state.sessionId}/images`, form, true);
+
   try {
-    const res = await req('POST', `/api/sessions/${state.sessionId}/images`, form, true);
+    await ensureSessionAlive('上传前的会话已失效');
+    let res;
+    try {
+      res = await doUpload();
+    } catch (e) {
+      if (e.status === 404 && /session/i.test(e.message)) {
+        await newSession('上传时会话目录已消失');
+        res = await doUpload();
+      } else {
+        throw e;
+      }
+    }
     toast(`已上传 ${res.saved.length} 张图像`);
     await reloadImages();
     const last = res.saved[res.saved.length - 1];
@@ -1786,9 +1944,22 @@ function bindUi() {
     $('newLabelInput').value = '';
     openLabelManage();
   });
+
+  $('btnEditLabels').addEventListener('click', openLabelManage);
   $('newLabelInput').addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') $('btnAddLabel').click();
   });
+
+  $('btnLabelsImport').addEventListener('click', () => {
+    const input = $('labelsFileInput');
+    input.value = '';
+    input.click();
+  });
+  $('labelsFileInput').addEventListener('change', (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    if (file) importLabelsFile(file);
+  });
+  $('btnLabelsExport').addEventListener('click', exportLabels);
 
   $('imageSearch').addEventListener('input', (e) => {
     state.search = e.target.value;
@@ -1856,7 +2027,7 @@ async function reloadImageCanvas() {
 }
 
 async function boot() {
-  loadLabels();
+  await loadLabels();
   buildMenubar();
   buildToolbar();
   buildToolstrip();
@@ -1868,7 +2039,12 @@ async function boot() {
     const forced = new URLSearchParams(location.search).get('session');
     if (forced && /^\d{14}(_\d+)?$/.test(forced)) {
       sessionStorage.setItem(STORE_SESSION, forced);
-      await loadSession(forced);
+      try {
+        await loadSession(forced);
+      } catch (e) {
+        if (e.status === 404) await newSession(`链接里的会话 ${forced} 不存在`);
+        else throw e;
+      }
     } else {
       await ensureSession();
       await loadSession(state.sessionId);

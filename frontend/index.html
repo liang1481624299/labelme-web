@@ -82,7 +82,8 @@
   <div class="modal modal-sm">
     <header>输入标签</header>
     <div class="modal-body">
-      <input id="labelInput" type="text" autocomplete="off" placeholder="标签名" />
+      <input id="labelInput" type="text" autocomplete="off" placeholder="标签名（输入或从下拉选择）" list="labelDatalist" />
+      <datalist id="labelDatalist"></datalist>
       <div class="recent" id="recentLabels"></div>
     </div>
     <footer>
@@ -136,13 +137,20 @@
       <button class="x" data-close>&times;</button>
     </header>
     <div class="modal-body">
+      <p class="hint">标签集是项目级的，保存在服务端 <code>data/labels.txt</code>（每行一个标签），
+        新开浏览器、换电脑都还在，桌面版 labelme 可以直接 <code>--labels data/labels.txt</code> 复用。</p>
       <div class="label-manage" id="labelManage"></div>
       <div class="add-row">
         <input id="newLabelInput" type="text" placeholder="新增标签" />
         <button class="btn" id="btnAddLabel">添加</button>
       </div>
     </div>
-    <footer><button class="btn btn-primary" data-close>完成</button></footer>
+    <footer>
+      <button class="btn" id="btnLabelsImport">导入…</button>
+      <button class="btn" id="btnLabelsExport">导出 labels.txt</button>
+      <button class="btn btn-primary" data-close>完成</button>
+    </footer>
+    <input type="file" id="labelsFileInput" accept=".txt,.json,text/plain,application/json" hidden />
   </div>
 </div>
 
