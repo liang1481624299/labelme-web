@@ -635,8 +635,8 @@ async function saveNow(silent) {
     updateStatus();
     if (!silent) toast(`已保存 ${target}.json`);
   } catch (e) {
-    if (e.status === 404 && /session/i.test(e.message)) {
-      await newSession(`保存时找不到会话目录（${target} 已随目录一起没了）`);
+    if (e.status === 404 && /session|工程/i.test(e.message)) {
+      await newSession(`保存时找不到工程目录（${target} 已随目录一起没了）`);
       return;
     }
     toast(`保存失败：${e.message}`, true);
@@ -2025,7 +2025,7 @@ function refreshImageList() {
   if (!items.length) {
     box.innerHTML = state.images.length
       ? '<div class="empty-list">没有匹配的文件</div>'
-      : '<div class="empty-list">会话内暂无图像，先上传</div>';
+      : '<div class="empty-list">工程内暂无图像，先上传</div>';
     return;
   }
   box.innerHTML = '';
@@ -2049,7 +2049,7 @@ function updateStatus() {
   const mid = $('statusMid');
   const sess = $('statusSession');
   const file = $('statusFile');
-  if (sess) sess.textContent = state.sessionId ? `会话 ${state.sessionId}` : '无会话';
+  if (sess) sess.textContent = state.sessionId ? '工程空间已连接' : '未连接工程';
   if (file) file.textContent = state.image ? state.image.name : '未打开文件';
   if (mid) {
     const total = state.images.length;
@@ -2080,7 +2080,7 @@ function readLastSession() {
     const raw = localStorage.getItem(STORE_LAST);
     if (!raw) return null;
     const obj = JSON.parse(raw);
-    if (!obj || !/^\d{14}(_\d+)?$/.test(String(obj.session || ''))) return null;
+    if (!obj || !/^(?:\d{14}(_\d+)?|workspace-[0-9a-f]{12})$/.test(String(obj.session || ''))) return null;
     if (Date.now() - Number(obj.at || 0) > LAST_SESSION_MAX_AGE_MS) return null;
     return obj;
   } catch (e) {
@@ -2289,7 +2289,7 @@ async function initProjects() {
   if (sp) sp.textContent = projectLabel();
 }
 
-/** 切换工程：先保存当前图，再换标签集、换会话。 */
+/** 切换工程：先保存当前图，再换标签集与工程空间。 */
 async function switchProject(name) {
   const target = String(name || '').trim();
   if (!target || target === state.project) return;
@@ -2306,7 +2306,7 @@ async function switchProject(name) {
   resetSessionState();
   await loadLabels();
   const sessions = await listSessions();
-  // 优先接回这个工程里“有图”的最近会话，避免切工程后落在空会话上（没图就画不了）
+  // 一个工程只有一个固定工作空间；有图就接回，没图就等上传
   const withImages = sessions.filter((s) => s.images > 0);
   const next = withImages[0] || sessions[0];
   if (next) {
@@ -2342,7 +2342,7 @@ function openProjectModal() {
     state.projects.forEach((p) => {
       const row = document.createElement('div');
       row.className = 'row' + (p.name === state.project ? ' selected' : '');
-      row.innerHTML = `<span class="name"></span><span class="meta">${p.sessions} 会话 · ${p.created_at}</span>`;
+      row.innerHTML = `<span class="name"></span><span class="meta">${p.created_at}</span>`;
       row.querySelector('.name').textContent = p.name;
       row.addEventListener('click', async () => {
         modal.hidden = true;
@@ -2400,7 +2400,7 @@ async function newSession(reason) {
   refreshImageList();
   updateStatus();
   redraw();
-  if (reason) toast(`${reason}，已切换到新会话 ${res.session}`, true);
+  if (reason) toast(`${reason}，已重新连接工程空间`, true);
   return res.session;
 }
 
@@ -2412,7 +2412,7 @@ async function ensureSessionAlive(reason) {
     await req('GET', `/api/sessions/${state.sessionId}/images`);
     return state.sessionId;
   } catch (e) {
-    if (e.status === 404) return await newSession(reason || '原会话目录已不存在');
+    if (e.status === 404) return await newSession(reason || '原工程目录已不存在');
     throw e;
   }
 }
@@ -2483,13 +2483,13 @@ async function uploadFiles(files) {
   const doUpload = () => req('POST', `/api/sessions/${state.sessionId}/images`, form, true);
 
   try {
-    await ensureSessionAlive('上传前的会话已失效');
+    await ensureSessionAlive('上传前的工程空间已失效');
     let res;
     try {
       res = await doUpload();
     } catch (e) {
-      if (e.status === 404 && /session/i.test(e.message)) {
-        await newSession('上传时会话目录已消失');
+      if (e.status === 404 && /session|工程/i.test(e.message)) {
+        await newSession('上传时工程目录已消失');
         res = await doUpload();
       } else {
         throw e;
@@ -2800,10 +2800,8 @@ const MENUS = [
     items: [
       { id: 'openFile', label: '打开文件(O)…', sc: 'Ctrl+O' },
       { id: 'upload', label: '打开文件夹…', sc: 'Ctrl+Shift+O' },
-      { id: 'sessions', label: '切换会话…' },
       { id: 'projects', label: '切换工程…' },
       { id: 'newProject', label: '新建工程…' },
-      { id: 'newSession', label: '新建会话…' },
       { sep: true },
       { id: 'save', label: '保存(S)', sc: 'Ctrl+S' },
       { id: 'saveAs', label: '另存为 JSON…', sc: 'Ctrl+Shift+S' },
@@ -3074,9 +3072,6 @@ function runAction(id) {
     case 'upload':
       pickFiles(true);
       break;
-    case 'sessions':
-      openSessionModal();
-      break;
     case 'projects':
       openProjectModal();
       break;
@@ -3086,9 +3081,6 @@ function runAction(id) {
         const input = $('newProjectName');
         if (input) input.focus();
       }, 30);
-      break;
-    case 'newSession':
-      createNewSessionFromMenu();
       break;
     case 'save':
       saveNow(false);
@@ -3293,51 +3285,6 @@ async function logoutUser() {
     await req('POST', '/api/auth/logout');
   } catch (e) { /* ignore */ }
   location.replace('/login');
-}
-
-async function createNewSessionFromMenu() {
-  try {
-    if (state.dirty && state.image) await saveNow(true);
-    await newSession();
-    toast(`已新建会话 ${state.sessionId}`);
-  } catch (e) {
-    toast(e.message, true);
-  }
-}
-
-function openSessionModal() {
-  const modal = $('sessionModal');
-  modal.hidden = false;
-  const box = $('sessionList');
-  box.innerHTML = '<div class="empty-list">加载中…</div>';
-  const last = readLastSession();
-  listSessions().then((items) => {
-    if (!items.length) {
-      box.innerHTML = '<div class="empty-list">还没有会话</div>';
-      return;
-    }
-    box.innerHTML = '';
-    items.forEach((s) => {
-      const row = document.createElement('div');
-      const isLast = last && last.session === s.session;
-      row.className = 'row'
-        + (s.session === state.sessionId ? ' selected' : '')
-        + (isLast ? ' last' : '');
-      row.innerHTML = `<span class="name">${s.session}${isLast ? '<span class="tag">上次</span>' : ''}</span>
-        <span class="meta">${s.images} 图 / ${s.annotated} 已标注 · ${s.created}</span>`;
-      row.addEventListener('click', async () => {
-        modal.hidden = true;
-        try {
-          await loadSession(s.session, isLast ? last.image : null);
-        } catch (e) {
-          toast(e.message, true);
-        }
-      });
-      box.appendChild(row);
-    });
-  }).catch((e) => {
-    box.innerHTML = `<div class="empty-list">${e.message}</div>`;
-  });
 }
 
 function openLabelManage() {
@@ -3635,16 +3582,6 @@ function bindUi() {
     }
   });
 
-  $('btnNewSession').addEventListener('click', async () => {
-    try {
-      const res = await req('POST', '/api/sessions' + projectQuery());
-      $('sessionModal').hidden = true;
-      await loadSession(res.session);
-      toast(`已新建会话 ${res.session}`);
-    } catch (e) {
-      toast(e.message, true);
-    }
-  });
   const btnCreateProject = $('btnCreateProject');
   if (btnCreateProject) btnCreateProject.addEventListener('click', submitProjectModal);
   const newProjectName = $('newProjectName');
@@ -3818,7 +3755,7 @@ async function boot() {
       try {
         await loadSession(forced);
       } catch (e) {
-        if (e.status === 404) await newSession(`链接里的会话 ${forced} 不存在`);
+        if (e.status === 404) await newSession(`链接里的工程空间 ${forced} 不存在`);
         else throw e;
       }
       return;
@@ -3835,37 +3772,35 @@ async function boot() {
       }
     }
 
-    // 2) 新标签页/浏览器崩溃后重开：sessionStorage 没了，退回 localStorage 的上次会话
+    // 2) 新标签页/浏览器崩溃后重开：sessionStorage 没了，退回 localStorage 的上次工程
     const last = readLastSession();
     if (last) {
       const busy = await probeLiveTab(last.session);
       if (busy) {
-        await newSession();
-        toast(`另一个标签页正在使用 ${last.session}，已新建会话 ${state.sessionId}`);
-        return;
+        toast('另一个标签页也打开了同一个工程，注意不要同时改同一张图', true);
       }
       try {
         await loadSession(last.session, last.image);
-        toast(`已恢复上次会话 ${last.session}${last.image ? ' · ' + last.image : ''}`);
+        toast(`已恢复上次工程${last.image ? ' · ' + last.image : ''}`);
         return;
       } catch (e) {
         if (e.status !== 404) throw e;
       }
     }
 
-    // 3) localStorage 也被硬杀/蓝屏弄丢了：问服务器“最近动过哪个会话”
+    // 3) localStorage 也被硬杀/蓝屏弄丢了：问服务器“最近动过哪个工程”
     const recent = await fetchRecent();
     if (recent && recent.session) {
       try {
         await loadSession(recent.session, recent.image);
-        toast(`已从服务器记录恢复上次会话 ${recent.session}${recent.at ? '（最后修改 ' + recent.at + '）' : ''}`);
+        toast(`已从服务器记录恢复上次工程${recent.at ? '（最后修改 ' + recent.at + '）' : ''}`);
         return;
       } catch (e) {
         if (e.status !== 404) throw e;
       }
     }
 
-    // 4) 真的什么都没有：开新会话
+    // 4) 真的什么都没有：进入当前工程的固定工作空间
     await ensureSession();
     await loadSession(state.sessionId);
   } catch (e) {

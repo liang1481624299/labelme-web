@@ -142,7 +142,7 @@ function renderProjects(projects) {
   const box = $('projectRows');
   box.innerHTML = '';
   if (!projects.length) {
-    box.innerHTML = '<tr><td colspan="6" class="empty-cell">还没有工程</td></tr>';
+    box.innerHTML = '<tr><td colspan="5" class="empty-cell">还没有工程</td></tr>';
     return;
   }
   projects.forEach((p) => {
@@ -152,7 +152,7 @@ function renderProjects(projects) {
     const nameCell = document.createElement('td');
     nameCell.textContent = p.name;
     const sessionsCell = document.createElement('td');
-    sessionsCell.textContent = String(p.sessions);
+    sessionsCell.textContent = p.sessions ? '正常' : '目录缺失';
     const createdCell = document.createElement('td');
     createdCell.textContent = fmt(p.created_at);
 
@@ -183,10 +183,10 @@ function renderProjects(projects) {
     delBtn.textContent = '删除';
     delBtn.style.marginLeft = '6px';
     delBtn.addEventListener('click', async () => {
-      if (!confirm(`确认删除 ${p.owner} 的工程「${p.name}」？\n其中 ${p.sessions} 个会话的图片和标注会一起删掉，不可恢复。`)) return;
+      if (!confirm(`确认删除 ${p.owner} 的工程「${p.name}」？\n其中所有图片和标注会一起删掉，不可恢复。`)) return;
       try {
         const res = await api('DELETE', '/api/projects', { owner: p.owner, name: p.name });
-        msg($('projectMsg'), `已删除「${p.name}」，清掉 ${res.sessions} 个会话`, true);
+        msg($('projectMsg'), `已删除「${p.name}」`, true);
         await loadProjects();
       } catch (err) {
         msg($('projectMsg'), err.message, false);
@@ -204,13 +204,8 @@ async function showProjectDetail(owner, name) {
     const d = await api('GET', `/api/projects/detail?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(name)}`);
     const lines = [];
     lines.push(`${d.owner} / ${d.name}`);
-    lines.push(`会话 ${d.session_count} 个 · 图片 ${d.images} 张 · 已标注 ${d.annotations} 张`);
+    lines.push(`图片 ${d.images} 张 · 已标注 ${d.annotations} 张`);
     if (d.labels.length) lines.push(`标签集：${d.labels.join('、')}`);
-    lines.push('');
-    d.sessions.slice(0, 30).forEach((s) => {
-      lines.push(`${s.session}  图片 ${s.images} / 标注 ${s.annotations}`);
-    });
-    if (d.sessions.length > 30) lines.push(`…… 其余 ${d.sessions.length - 30} 个会话省略`);
     alert(lines.join('\n'));
   } catch (err) {
     msg($('projectMsg'), err.message, false);
@@ -398,7 +393,7 @@ $('btnLogout').addEventListener('click', async () => {
 });
 
 /* ---------------------------------------------------------------- 视图切换 */
-const PAGES = ['overview', 'accounts', 'batch', 'ldap', 'sso', 'projects', 'files', 'uploads'];
+const PAGES = ['overview', 'accounts', 'batch', 'ldap', 'sso', 'projects', 'files', 'uploads', 'settings', 'ai'];
 const loadedViews = new Set();
 let navReady = false;
 
@@ -423,6 +418,14 @@ function showView(name) {
     loadUploaders();
   }
   if (name === 'projects' && !loadedViews.has('projects')) loadedViews.add('projects');
+  if (name === 'settings' && !loadedViews.has('settings')) {
+    loadedViews.add('settings');
+    loadSystemConfig();
+  }
+  if (name === 'ai' && !loadedViews.has('ai')) {
+    loadedViews.add('ai');
+    loadAiConfig();
+  }
   if (location.hash !== '#' + name) {
     if (navReady) history.pushState(null, '', '#' + name);
     else history.replaceState(null, '', '#' + name);
@@ -618,7 +621,7 @@ $('btnResetSso').addEventListener('click', async () => {
 });
 
 /* ------------------------------------------------------------ 文件浏览器 */
-const fsPlace = { owner: '', project: '', session: '' };
+const fsPlace = { owner: '', project: '' };
 
 function fmtSize(n) {
   if (!n) return '—';
@@ -632,18 +635,16 @@ function crumb() {
   const bits = ['data/'];
   if (fsPlace.owner) bits.push(fsPlace.owner + '/');
   if (fsPlace.project) bits.push(fsPlace.project + '/');
-  if (fsPlace.session) bits.push(fsPlace.session + '/');
   $('fsCrumb').textContent = bits.join('');
   $('fsPath').textContent = bits.join('');
 }
 
 async function loadFiles(place) {
-  Object.assign(fsPlace, { owner: '', project: '', session: '' }, place || {});
+  Object.assign(fsPlace, { owner: '', project: '' }, place || {});
   crumb();
   const q = new URLSearchParams();
   if (fsPlace.owner) q.set('owner', fsPlace.owner);
   if (fsPlace.project) q.set('project', fsPlace.project);
-  if (fsPlace.session) q.set('session', fsPlace.session);
   try {
     const res = await api('GET', '/api/admin/files?' + q.toString());
     renderFiles(res.entries || []);
@@ -676,7 +677,6 @@ function renderFiles(entries) {
       openBtn.addEventListener('click', () => {
         if (!fsPlace.owner) loadFiles({ owner: entry.name });
         else if (!fsPlace.project) loadFiles({ owner: fsPlace.owner, project: entry.name });
-        else loadFiles({ owner: fsPlace.owner, project: fsPlace.project, session: entry.name });
       });
     } else {
       openBtn.addEventListener('click', () => {
@@ -687,7 +687,7 @@ function renderFiles(entries) {
 
     const typeCell = document.createElement('td');
     typeCell.textContent = entry.type === 'dir'
-      ? (fsPlace.session ? '会话目录' : fsPlace.project ? '会话' : fsPlace.owner ? '工程' : '账号目录')
+      ? (fsPlace.project ? '工程目录' : fsPlace.owner ? '工程' : '账号目录')
       : (entry.kind === 'image' ? '图片' : entry.kind === 'annotation' ? '标注' : entry.kind === 'labels' ? '标签集' : '文件');
 
     const sizeCell = document.createElement('td');
@@ -698,7 +698,6 @@ function renderFiles(entries) {
       if (entry.images !== undefined) {
         const parts = [`${entry.images} 张图`];
         if (entry.annotations !== undefined) parts.push(`${entry.annotations} 个标注`);
-        if (entry.sessions !== undefined) parts.push(`${entry.sessions} 个会话`);
         if (entry.projects !== undefined) parts.push(`${entry.projects} 个工程`);
         countCell.textContent = parts.join(' / ');
       } else {
@@ -750,8 +749,7 @@ function renderFiles(entries) {
 }
 
 $('fsUp').addEventListener('click', () => {
-  if (fsPlace.session) loadFiles({ owner: fsPlace.owner, project: fsPlace.project });
-  else if (fsPlace.project) loadFiles({ owner: fsPlace.owner });
+  if (fsPlace.project) loadFiles({ owner: fsPlace.owner });
   else loadFiles({});
 });
 
@@ -781,7 +779,7 @@ async function loadUploaders() {
         ev.at,
         ev.actor,
         ev.event === 'upload' ? '上传' : ev.event === 'annotate' ? '保存标注' : ev.event === 'delete' ? '删除' : ev.event,
-        [ev.owner, ev.project, ev.session].filter(Boolean).join(' / '),
+        [ev.owner, ev.project].filter(Boolean).join(' / '),
         ev.name,
         ev.size ? fmtSize(ev.size) : '—',
       ].forEach((text) => {
@@ -795,6 +793,99 @@ async function loadUploaders() {
     msg($('eventMsg'), err.message, false);
   }
 }
+
+/* ------------------------------------------------------------ 系统设置 */
+async function loadSystemConfig() {
+  try {
+    const cfg = await api('GET', '/api/admin/system-config');
+    $('siteName').value = cfg.site_name || 'Labelme';
+    $('uploadMaxMb').value = cfg.upload_max_mb || 200;
+    $('systemAllowRegistration').checked = !!cfg.allow_registration;
+    $('systemSuffixes').textContent = (cfg.image_suffixes || []).join('、') || '—';
+    $('systemVersion').textContent = cfg.labelme_version || '—';
+    $('systemState').textContent = '已加载';
+    $('systemState').className = 'tag enabled';
+    document.title = `管理后台 · ${cfg.site_name || 'Labelme'}`;
+    const brand = document.querySelector('.admin-brand b');
+    if (brand) brand.textContent = cfg.site_name || 'Labelme';
+  } catch (err) {
+    msg($('systemMsg'), err.message, false);
+  }
+}
+
+$('systemForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    const res = await api('PUT', '/api/admin/system-config', {
+      site_name: $('siteName').value.trim(),
+      upload_max_mb: Number($('uploadMaxMb').value),
+      allow_registration: $('systemAllowRegistration').checked,
+    });
+    msg($('systemMsg'), `已保存：${(res.saved || []).join('、')}`, true);
+    await loadSystemConfig();
+  } catch (err) {
+    msg($('systemMsg'), err.message, false);
+  }
+});
+
+/* -------------------------------------------------------------- AI 模型 */
+async function loadAiConfig() {
+  try {
+    const cfg = await api('GET', '/api/admin/ai-config');
+    $('aiEnabled').checked = !!cfg.enabled;
+    $('aiEndpoint').value = cfg.endpoint || '';
+    $('aiModel').value = cfg.model || '';
+    $('aiModels').value = (cfg.models || []).join('\n');
+    $('aiTimeout').value = cfg.timeout || 30;
+    $('aiApiKey').value = '';
+    $('aiApiKey').placeholder = cfg.api_key_set ? '已设置（留空不修改）' : '留空 = 不设置';
+    $('aiState').textContent = cfg.enabled ? `已保存 · 待接入推理（${cfg.model || ''}）` : '未启用';
+    $('aiState').className = 'tag ' + (cfg.enabled ? 'enabled' : 'disabled');
+  } catch (err) {
+    msg($('aiMsg'), err.message, false);
+  }
+}
+
+$('aiForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    const body = {
+      enabled: $('aiEnabled').checked,
+      endpoint: $('aiEndpoint').value.trim(),
+      model: $('aiModel').value.trim(),
+      models: $('aiModels').value,
+      timeout: Number($('aiTimeout').value),
+    };
+    const key = $('aiApiKey').value.trim();
+    if (key) body.api_key = key;
+    const res = await api('PUT', '/api/admin/ai-config', body);
+    msg($('aiMsg'), `已保存：${(res.saved || []).join('、')}`, true);
+    await loadAiConfig();
+  } catch (err) {
+    msg($('aiMsg'), err.message, false);
+  }
+});
+
+$('btnTestAi').addEventListener('click', async () => {
+  msg($('aiMsg'), '正在测试…', true);
+  try {
+    const res = await api('POST', '/api/admin/ai-config/test');
+    msg($('aiMsg'), res.ok ? `服务可达（HTTP ${res.status}）：${res.detail}` : `连接失败：${res.detail}`, res.ok);
+  } catch (err) {
+    msg($('aiMsg'), err.message, false);
+  }
+});
+
+$('btnClearAi').addEventListener('click', async () => {
+  if (!confirm('恢复默认会清掉服务地址、模型列表和 API Key，确定？')) return;
+  try {
+    await api('DELETE', '/api/admin/ai-config');
+    msg($('aiMsg'), '已恢复默认', true);
+    await loadAiConfig();
+  } catch (err) {
+    msg($('aiMsg'), err.message, false);
+  }
+});
 
 /* 首次进入：按 hash 定位，默认概览 */
 showView((location.hash || '').replace('#', '') || 'overview');

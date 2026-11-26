@@ -2,6 +2,7 @@
 data/*
 !data/.gitkeep
 var/
+backup/
 __pycache__/
 *.pyc
 *.log

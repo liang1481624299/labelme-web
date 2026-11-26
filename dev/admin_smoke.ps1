@@ -69,14 +69,12 @@ try {
   $files = J GET '/api/admin/files' $null
   Check (($files.entries | Where-Object { $_.name -eq 'tester' }).type -eq 'dir') '文件浏览器根目录列出账号目录'
   $f2 = J GET '/api/admin/files?owner=tester' $null
-  Check (($f2.entries | Where-Object { $_.name -eq '冒烟工程' }).sessions -ge 1) 'owner 层列出工程并带会话数'
+  Check (($f2.entries | Where-Object { $_.name -eq '冒烟工程' }).projects -eq 1) 'owner 层列出工程并带工程数'
   $f3 = J GET "/api/admin/files?owner=tester&project=%E5%86%92%E7%83%9F%E5%B7%A5%E7%A8%8B" $null
-  Check (($f3.entries | Where-Object { $_.name -eq $sid }).images -eq 1) 'project 层列出会话并带图片数'
-  $f5 = J GET "/api/admin/files?owner=tester&project=%E5%86%92%E7%83%9F%E5%B7%A5%E7%A8%8B&session=$sid" $null
-  $sample = $f5.entries | Where-Object { $_.name -eq 'sample.jpg' }
-  Check ($sample.kind -eq 'image' -and $sample.last_actor -eq 'tester' -and $sample.last_event -eq 'upload') '文件层带「谁上传的」'
+  $sample = $f3.entries | Where-Object { $_.name -eq 'sample.jpg' }
+  Check ($sample.kind -eq 'image' -and $sample.last_actor -eq 'tester' -and $sample.last_event -eq 'upload') '工程层直接列出文件并带「谁上传的」'
 
-  $raw = Invoke-WebRequest -Uri "$base/api/admin/files/raw?path=tester/%E5%86%92%E7%83%9F%E5%B7%A5%E7%A8%8B/$sid/sample.jpg" -WebSession $sess
+  $raw = Invoke-WebRequest -Uri "$base/api/admin/files/raw?path=tester/%E5%86%92%E7%83%9F%E5%B7%A5%E7%A8%8B/sample.jpg" -WebSession $sess
   Check ($raw.StatusCode -eq 200 -and $raw.RawContentLength -ge 4) 'raw 下载可读'
   $bad = $null
   try { Invoke-WebRequest -Uri "$base/api/admin/files/raw?path=../backend/app.py" -WebSession $sess | Out-Null } catch { $bad = $_.Exception.Response.StatusCode.value__ }
@@ -85,7 +83,7 @@ try {
   $up = J GET '/api/admin/uploaders?limit=10' $null
   Check ($up.stats.uploads -eq 1 -and @($up.by_actor)[0].actor -eq 'tester') '上传流水按人汇总'
 
-  $del = J DELETE "/api/admin/files?path=tester/%E5%86%92%E7%83%9F%E5%B7%A5%E7%A8%8B/$sid/sample.jpg" $null
+  $del = J DELETE "/api/admin/files?path=tester/%E5%86%92%E7%83%9F%E5%B7%A5%E7%A8%8B/sample.jpg" $null
   Check ($del.size -ge 4) '管理员删除单个文件并记录'
 } finally {
   Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue

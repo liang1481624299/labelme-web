@@ -444,6 +444,8 @@ def auth_methods() -> Dict[str, Any]:
         "password": True,
         "ldap": ldap_auth.public_config(),
         "sso": sso_auth.public_config(),
+        "site_name": get_setting("site.name", "Labelme"),
+        "upload_max_mb": get_setting("upload.max_mb", os.environ.get("LABELME_WEB_MAX_UPLOAD_MB", "200")),
     }
 
 

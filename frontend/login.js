@@ -91,6 +91,10 @@ if (params.get('sso_error')) {
     const res = await fetch('/api/auth/methods', { credentials: 'same-origin' });
     if (!res.ok) return;
     const data = await res.json();
+    const siteName = String((data && data.site_name) || 'Labelme').trim() || 'Labelme';
+    document.title = `登录 · ${siteName}`;
+    const brand = document.querySelector('.auth-brand span:not(.dot):not(.ver)');
+    if (brand) brand.textContent = siteName;
     const ldap = (data && data.ldap) || {};
     const sso = (data && data.sso) || {};
     if (sso.enabled) {

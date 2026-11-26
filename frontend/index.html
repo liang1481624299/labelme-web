@@ -105,23 +105,6 @@
   </div>
 </div>
 
-<div class="modal-backdrop" id="sessionModal" hidden>
-  <div class="modal">
-    <header>
-      <span>选择会话</span>
-      <button class="x" data-close>&times;</button>
-    </header>
-    <div class="modal-body">
-      <p class="hint">每个浏览器会话对应 <code>data/用户名/工程/时间戳/</code> 一个文件夹，图像与同名 JSON 存在同一目录。</p>
-      <div class="session-list" id="sessionList"></div>
-    </div>
-    <footer>
-      <button class="btn" data-close>关闭</button>
-      <button class="btn btn-primary" id="btnNewSession">新建会话</button>
-    </footer>
-  </div>
-</div>
-
 <div class="modal-backdrop" id="projectModal" hidden>
   <div class="modal">
     <header>
@@ -129,7 +112,7 @@
       <button class="x" data-close>&times;</button>
     </header>
     <div class="modal-body">
-      <p class="hint">工程目录 <code>data/用户名/工程名/</code>，会话与标签集都按工程隔离。</p>
+      <p class="hint">工程目录 <code>data/用户名/工程名/</code>，图像、标注与标签集都直接放在工程里。</p>
       <div class="session-list" id="projectList"></div>
       <div class="inline-form">
         <input id="newProjectName" type="text" autocomplete="off" placeholder="新工程名（中英文、数字，1–40 位）" />

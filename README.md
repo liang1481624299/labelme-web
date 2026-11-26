@@ -14,7 +14,7 @@ labelme-web/
 ├── backend/
 │   ├── app.py            # HTTP API + 静态托管 + 页面路由
 │   ├── auth.py           # 账号库（SQLite）、bcrypt、登录态、/admin 接口
-│   ├── workspace.py      # 工程/会话的磁盘布局、SQLite 索引、老数据迁移
+│   ├── workspace.py      # 工程磁盘布局、固定工作空间、老数据迁移
 │   └── requirements.txt
 ├── frontend/
 │   ├── index.html        # 标注页（需登录）
@@ -29,12 +29,11 @@ labelme-web/
 │   └── serve.py          # 本地开发前置：9630 静态 + /api 反代到 9631
 ├── data/                 # 标注数据，运行时生成，删掉会自动重建
 │   └── <用户名>/
-│       └── <工程名>/     # 工程级标签集 labels.txt 在这里
+│       └── <工程名>/     # 图片、标注、标签集都直接放在工程里
 │           ├── labels.txt
-│           └── 20260101013030/   # 一次浏览器会话一个文件夹
-│               ├── 114.jpg
-│               ├── 114.json
-│               └── .drafts/      # 崩溃草稿，正常保存后自动删除
+│           ├── 114.jpg
+│           ├── 114.json
+│           └── .drafts/  # 崩溃草稿，正常保存后自动删除
 ├── var/
 │   └── labelme-web.db    # 账号库（bcrypt 哈希），运行时生成，不进 Git
 ├── deploy/
@@ -44,42 +43,48 @@ labelme-web/
 └── README.md
 ```
 
-## 工程、会话与数据布局
+## 工程与数据布局
 
-磁盘上是三层：**用户名 → 工程 → 会话**。
+磁盘上是两层：**用户名 → 工程**。工程内部不再有「会话」这一层，图片、标注、标签集、草稿都直接放在工程根目录。
 
 ```
-data/<用户名>/<工程名>/<YYYYMMDDHHMMSS>/
-data/shiroko/电路板A/20261125102550/114.jpg
-data/shiroko/电路板A/20261125102550/114.json
+data/<用户名>/<工程名>/
+data/shiroko/电路板A/114.jpg
+data/shiroko/电路板A/114.json
 ```
 
 - **用户名**来自登录账号：普通账号只能进出自己的目录树，管理员可以指定任意账号
-  （`?owner=xxx`）；跨账号访问会话一律按 404 处理，不泄露“这个会话存在”。
+  （`?owner=xxx`）；跨账号访问工程一律按 404 处理，不泄露「这个工程存在」。
 - **工程**是标注的组织单位，用「文件 → 切换工程…」「文件 → 新建工程…」管理；
   工程目录缺失时会自动创建。标签集也跟着工程走：`data/<用户名>/<工程>/labels.txt`。
-- **会话**对应一次连续标注（一个文件夹、一批图），用「文件 → 新建会话…」新建。
+- 每个工程内部有一个**固定工作空间**（`workspace-xxxxxxxxxxxx`）。前端仍用
+  `/api/sessions/{workspace}/...` 这组接口，但目录就是工程根目录，界面上看不到「会话」。
 
-会话 id 仍然只是 14 位时间戳（同一秒重复加 `_2`、`_3`），前端 URL、草稿键、恢复链路都不变；
-真实路径由 `var/labelme-web.db` 里的 `session_index` 表维护（`session_index(id, owner, project, created_at)`）。
-索引丢了也不要紧：访问某个 id 时会全盘扫 `data/*/*/<id>` 并自动补回；服务启动时也会把磁盘上
-存在但索引里没有的会话补进来（手工拷 `data/`、恢复备份都能直接用）。
+工作空间 id 由 `sha1(owner + project)` 前 12 位生成，存在 `var/labelme-web.db` 的
+`session_index` 表里；改工程名时会同步换成新 id。索引丢了也不要紧：访问时按 owner/project
+重算并补回，服务启动时也会扫 `data/*/*` 重建工程索引。
 
-`data/` 仍然是纯运行目录：**整个删掉也没关系**，下次新建会话/列表时后端会重建；
+`data/` 是纯运行目录：**整个删掉也没关系**，下次列表/新建工程时后端会重建；
 失效的索引行会被顺手清掉。备份/迁移只需要拷 `data/` 和 `var/labelme-web.db`。
 
 ### 老布局自动迁移
 
-历史数据如果是 `data/<时间戳>/` 扁平结构，会在**第一个管理员出现后**自动搬到
-`data/<管理员>/默认工程/<时间戳>/`，旧的 `data/labels.txt` 也一并搬进该工程；
-迁移是 `shutil.move`，同一磁盘上很快，重复执行不会二次移动。用
-`LABELME_WEB_DATA` 可以把整个数据根换到别处（默认就是项目下的 `data/`）。
+启动时会做两件事，重复执行不会二次搬动：
 
-会话内规则：**上传的原图和标注 JSON 同目录、同名**。
+1. 历史 `data/<时间戳>/` 扁平目录 → 搬到 `data/<管理员>/默认工程/` 根目录，旧的
+   `data/labels.txt` 一并搬进该工程；
+2. 工程内旧的 `data/<用户名>/<工程>/<时间戳>/` 会话目录 → 拍平到工程根目录；同名文件
+   自动加 `-<时间戳>` 后缀，并同步改写 JSON 的 `imagePath`。
+
+迁移使用 `shutil.move`，同一磁盘上很快。真实数据迁移前建议先整包备份 `data/` 与
+`var/labelme-web.db`（仓库里的 `backup/pre-flat-*` 就是这样一份）。用 `LABELME_WEB_DATA`
+可以把整个数据根换到别处（默认就是项目下的 `data/`）。
+
+工程内规则：**上传的原图和标注 JSON 同目录、同名**。
 
 ```
-data/20260101013030/114.jpg     ← 原图（上传时的原文件，不做任何压缩）
-data/20260101013030/114.json    ← 该图的标注
+data/shiroko/电路板A/114.jpg     ← 原图（上传时的原文件，不做任何压缩）
+data/shiroko/电路板A/114.json    ← 该图的标注
 ```
 
 `114.json` 的字段与 labelme 7.11.0 写出的文件一致：
@@ -107,23 +112,26 @@ data/20260101013030/114.json    ← 该图的标注
 ```
 
 `imagePath` 始终是同目录的文件名（相对），`imageData` 为 `null`（原图就在旁边，不重复存 base64）。
-把整个会话目录拷进桌面版 labelme →「打开文件夹」，回读的标注与 Web 端一致，反之亦然。
+把整个工程目录拷进桌面版 labelme →「打开文件夹」，回读的标注与 Web 端一致，反之亦然。
 
-## 会话失效与自愈
+## 工程失效与自愈
 
-会话 id 存在浏览器 `sessionStorage`，目录存在服务器，两边可能对不上：清空 `data/`、换机器、
-别人清理旧会话之后，老标签页手里的 id 就成了悬空引用（报 `session not found`）。现在的处理是：
+工程工作空间 id 存在浏览器 `sessionStorage`，目录存在服务器，两边可能对不上：清空 `data/`、
+换机器、别人清理工程之后，老标签页手里的 id 就成了悬空引用（报 `session not found`）。现在的处理是：
 
-- 页面启动时探活：会话不存在就直接新建一个，不会停在错误页；
-- 上传文件夹前先探活（`ensureSessionAlive()`），发现目录没了就新建会话再上传；
-- 保存标注收到 404 时就地重建会话并提示「原会话目录已不存在」，不再把 404 丢给你；
-- 用 `?session=xxx` 打开一个已被删掉的会话，会提示并新建，而不是卡住。
+- 页面启动时探活：工程不存在就直接进入当前工程的固定工作空间，不会停在错误页；
+- 上传文件夹前先探活（`ensureSessionAlive()`），发现目录没了就重建工作空间再上传；
+- 保存标注收到 404 时就地重建工作空间并提示「原工程目录已不存在」，不再把 404 丢给你；
+- 用 `?session=xxx` 打开一个已被删掉的工程，会提示并重建，而不是卡住。
 
-界面上会弹一句「原会话目录已不存在，已切换到新会话 2026…」，不打断操作。
+界面上会弹一句「原工程目录已不存在，已重新连接工程空间」，不打断操作。
 
 > 顺带说明为什么不用浏览器指纹：指纹会随浏览器升级、隐私开关、多设备而变，
 > 会导致「同一个人的标注突然分裂成好几个文件夹」；而且它属于隐私敏感信息，不适合拿来当目录主键。
-> 这里要的语义是「一次标注会话一个文件夹」，随机会话 id + 失效自愈比指纹更稳、更可控。
+> 现在一个工程一个固定工作空间，比随机会话 id 更稳、更可控。
+>
+> 注意：两个标签页现在会进入同一个工程空间，不再自动分出新会话；同时改同一张图会互相覆盖，
+> 前端会提示「另一个标签页也打开了同一个工程」。
 
 ## 账号、登录与权限
 
@@ -157,9 +165,12 @@ data/20260101013030/114.json    ← 该图的标注
   scopes、回调地址、管理员组、账号名/组字段、显示名、secret 传递方式，带「保存 / 测试 discovery /
   恢复环境变量」）；
 - **工程与文件**：工程管理（工程表：详情 / 改名 / 删除、批量建同名工程）、文件资源管理器、
-  上传流水（谁上传了什么）。
+  上传流水（谁上传了什么）；
+- **系统与 AI**：系统设置（站点名称、单文件上传上限、自助注册开关，保存后即时生效）、
+  AI 模型（推理服务地址、默认模型、可用模型列表、API Key 遮罩、超时，带「保存 / 测试连接 /
+  恢复默认」）。
 
-文件资源管理器按 `data/ → 账号 → 工程 → 会话 → 文件` 逐层点进去，每层给出大小、条目数 /
+文件资源管理器按 `data/ → 账号 → 工程 → 文件` 逐层点进去，每层给出大小、条目数 /
 图片数、修改时间；到文件层会显示**最后一个动这个文件的人**（上传 / 保存标注 / 删除），
 也可以预览、下载、单个删除。只在管理员身份下可用，路径一律限制在 `data/` 内，越界直接 400。
 
@@ -216,7 +227,7 @@ LABELME_WEB_LDAP_ADMIN_GROUP=CN=labelme-admins,OU=groups,DC=lab,DC=local
 行为约定（这几条是刻意设计，不是实现细节）：
 
 - 认证成功后在 `users` 里落一条影子账号（`source='ldap'`，`password_hash='!ldap'` 占位），
-  之后工程、会话、`/admin`、批量建号全部照旧；账号名必须符合本站命名规则（它同时是 `data/` 的目录名）
+  之后工程、`/admin`、批量建号全部照旧；账号名必须符合本站命名规则（它同时是 `data/` 的目录名）
 - 组命中管理员时**只升不降**，避免 LDAP 组配错把唯一的管理员降权锁死
 - LDAP 连不上 → HTTP 503「LDAP 暂不可用，请先用本地账号登录」，且**不累加登录失败次数**，
   免得 LDAP 抖动把本地账号一起锁了
@@ -254,7 +265,7 @@ python dev/ldap_mock_check.py     # 13 项：模板/搜索绑定、密码错、�
    （带 `state` / `nonce`，内存里存 10 分钟）；
 2. IdP 回调 `GET /api/auth/sso/callback` → 用 code 换 token → 用 JWKS 校验
    `id_token`（`iss` / `aud` / `exp` / `nonce`）→ 取 claims 里的账号名；
-3. 落一条影子账号（`source='sso'`，`password_hash='!sso'` 占位），之后权限、工程、会话、
+3. 落一条影子账号（`source='sso'`，`password_hash='!sso'` 占位），之后权限、工程、
    `/admin` 全部照旧；同名本地账号不覆盖密码，只按组升权限；
 4. 任何失败都 302 回 `/login?sso_error=...`，`SsoUnavailable` 与 `SsoError` 分开给原因
    （连不上 IdP / 校验不过），不会把用户卡在空白页；
@@ -270,11 +281,11 @@ python dev/sso_mock_check.py      # 25 项：discovery 缓存、state 一次性�
 管理后台冒烟（隔离库 + 端口 9632，覆盖配置保存/测试、文件浏览器、上传流水）：
 
 ```bash
-pwsh dev/admin_smoke.ps1          # 19 项
+pwsh dev/admin_smoke.ps1          # 18 项
 ```
 
 
-## 崩溃 / 强杀 / 蓝屏后的会话恢复
+## 崩溃 / 强杀 / 蓝屏后的编辑恢复
 
 浏览器被任务管理器强杀、渲染进程崩溃、笔记本蓝屏或直接断电，都不是「正常关闭」，
 `beforeunload` 不保证执行，`sessionStorage` 一定会丢，`localStorage` 也不一定落盘
@@ -286,13 +297,13 @@ pwsh dev/admin_smoke.ps1          # 19 项
 | 1 | `sessionStorage` | 刷新、同标签页重开 |
 | 2 | `localStorage`（`labelme.web.lastSession`） | 标签页崩溃、正常关浏览器 |
 | 3 | 服务器 `GET /api/recent` | 强杀进程、蓝屏、断电（只看磁盘上最后一次改动） |
-| 4 | 新建会话 | 上面都没有（首次使用 / 会话被删） |
+| 4 | 进入当前工程的固定工作空间 | 上面都没有（首次使用 / 工程被删） |
 
-启动时按顺序探活，命中 2 或 3 会弹一句「已恢复上次会话 2026…」，并把上次那张图直接打开；
-会话目录在服务器上已经没了就自动落到下一层，不会停在错误页。
+启动时按顺序探活，命中 2 或 3 会弹一句「已恢复上次工程」，并把上次那张图直接打开；
+工程目录在服务器上已经没了就自动落到下一层，不会停在错误页。
 
 第 2 层还有一道 **BroadcastChannel 探活**（`labelme-web-live`，等 450 ms）：
-如果同一个浏览器里已经有标签页活着并用着这个会话，就不抢，直接新建会话，避免两个页面同时写同一份 JSON。
+如果同一个浏览器里已经有标签页活着并用着这个工程，现在不会另开目录，只提示「注意不要同时改同一张图」。
 
 ### 未保存的编辑怎么找回
 
@@ -300,7 +311,7 @@ pwsh dev/admin_smoke.ps1          # 19 项
 
 - `localStorage`：改动后 250 ms 写 `labelme.web.draft.<session>.<图名>`；
 - 服务器：改动后 600 ms `PUT /api/sessions/{s}/drafts/{图名}`，落在
-  `data/<session>/.drafts/<图名>.json`，写入走「临时文件 + `fsync` + rename」，断电也不容易坏。
+  `data/<用户名>/<工程>/.drafts/<图名>.json`，写入走「临时文件 + `fsync` + rename」，断电也不容易坏。
 
 标注 JSON 本身也走同一套 `fsync` 落盘，所以一次保存要么是旧的、要么是新的，不会出现半截文件。
 
@@ -312,10 +323,10 @@ pwsh dev/admin_smoke.ps1          # 19 项
 
 - 关标签页/关浏览器时 `beforeunload` 用 `keepalive` 把标注和草稿各补一枪；
 - 切到后台、合盖（`visibilitychange` / `pagehide`）立刻 flush 一次草稿，笔记本睡眠当崩溃处理；
-- 换会话/换图时取消未触发的草稿定时器，避免把 A 图的形状写到 B 图。
+- 换工程/换图时取消未触发的草稿定时器，避免把 A 图的形状写到 B 图。
 
-最坏情况只丢最后 600 ms 内的改动；`data/<session>/.drafts/` 是隐藏子目录，不影响「原图和 JSON 同目录」，
-把会话目录拷进桌面版时可以直接连 `.drafts` 一起删掉。
+最坏情况只丢最后 600 ms 内的改动；`data/<用户名>/<工程>/.drafts/` 是隐藏子目录，不影响「原图和 JSON 同目录」，
+把工程目录拷进桌面版时可以直接连 `.drafts` 一起删掉。
 
 ## 标签集：导入 / 导出 / 跨端复用
 
@@ -332,7 +343,7 @@ pwsh dev/admin_smoke.ps1          # 19 项
 - 桌面版 labelme 可以直接复用同一份标签：
 
 ```bash
-labelme data/<用户名>/<工程名>/20260101013030 --labels data/<用户名>/<工程名>/labels.txt
+labelme data/<用户名>/<工程名> --labels data/<用户名>/<工程名>/labels.txt
 ```
 
 > 注意：标签集在工程目录里，所以清空 `data/` 会连同标签集一起清掉——
@@ -402,8 +413,8 @@ sudo systemctl restart labelme-web
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-上传体积上限改两处：`/etc/nginx/sites-available/labelme-web` 的 `client_max_body_size`，
-与 `labelme-web.service` 里的 `LABELME_WEB_MAX_UPLOAD_MB`（默认 200 MB）。
+上传体积上限有三处：NGINX 的 `client_max_body_size`、后台「系统设置 → 单文件上传上限」（存数据库，优先），
+以及 `labelme-web.service` 里的 `LABELME_WEB_MAX_UPLOAD_MB`（默认 200 MB，作为环境变量兜底）。
 
 HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块即可，后端不需要改；
 登录 cookie 会自动按 `X-Forwarded-Proto: https` 加上 `Secure`（也可用
@@ -433,7 +444,10 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 - 视图：十字准星开关、允许点在图像外（`allow_out_of_bounds_points`）、显示/隐藏侧边面板、重置面板布局
 
 **未对标**：`AI-Segment`、`AI-Find All`、SAM 模型下拉与「模型管理」（`open_models`）。这些依赖服务端 SAM 权重与 GPU，
-纯 Web 源码部署没有模型可用，界面上保留入口但置灰，鼠标悬停会说明。普通标注流程不受影响。
+纯 Web 源码部署没有模型可用，标注页的 AI 入口仍置灰。管理后台已经提供 **AI 模型**配置页：
+可以保存推理服务地址、默认模型、可用模型列表、API Key 与超时，并用 `GET <endpoint>/health`
+做连通性测试；但真正的分割推理尚未接入 Web 标注页（后端不加载 torch/SAM 权重）。
+要打通需要在服务端部署一个实现 `/health` 的推理服务，再补 `/api/ai/segment` 代理与前端点选交互。
 
 其余有意不做或形态不同、不影响标注结果的差异：
 
@@ -458,14 +472,20 @@ Web 版结果更贴近原始轮廓，但点数更多。需要完全一致可后�
 | POST | `/api/auth/login` | 登录，成功后下发 `lmweb_session` cookie |
 | POST | `/api/auth/logout` | 退出登录并删掉服务端 token |
 | GET | `/api/auth/me` | 当前账号 `{user:{id,username,role,enabled}}` |
-| GET | `/api/auth/methods` | 登录方式（`{password:true, ldap:{enabled,label}, sso:{enabled,label}}`），不泄露地址与 client |
+| GET | `/api/auth/methods` | 登录方式（`{password:true, ldap:{enabled,label}, sso:{enabled,label}, site_name, upload_max_mb}`），不泄露地址与 client |
 | GET | `/api/auth/sso/start` | 302 到 IdP 授权页；未启用 SSO 时 404 |
 | GET | `/api/auth/sso/callback` | IdP 回调：换 token、验 `id_token`、发本地会话、回 `next`；失败 302 到登录页带 `sso_error` |
 | GET | `/api/admin/auth-config` | LDAP / SSO 当前生效配置（密钥遮罩，带每个值的来源） |
 | PUT | `/api/admin/auth-config` | 保存 LDAP / SSO 配置到数据库（优先于环境变量） |
 | DELETE | `/api/admin/auth-config` | `?kind=ldap|sso` 清掉页面保存的值，回退环境变量 |
 | POST | `/api/admin/auth-config/test` | 连通性测试 `{kind:'ldap'|'sso'}` |
-| GET | `/api/admin/files` | 文件浏览器：`?owner=&project=&session=` 逐层列目录（带大小/时间/上传人） |
+| GET | `/api/admin/system-config` | 站点名称、上传上限、注册开关、支持格式（仅管理员） |
+| PUT | `/api/admin/system-config` | 保存 `{site_name?, upload_max_mb?, allow_registration?}`，即时生效 |
+| GET | `/api/admin/ai-config` | AI 配置（API Key 遮罩，仅管理员） |
+| PUT | `/api/admin/ai-config` | 保存 `{enabled, endpoint, model, models, timeout, api_key?}` |
+| DELETE | `/api/admin/ai-config` | 清掉 AI 配置，恢复默认 |
+| POST | `/api/admin/ai-config/test` | 请求 `<endpoint>/health` 做连通性测试 |
+| GET | `/api/admin/files` | 文件浏览器：`?owner=&project=` 逐层列目录（带大小/时间/上传人），已无会话层 |
 | GET | `/api/admin/files/raw` | 读取 `data/` 下的单个文件 `?path=`，`&download=1` 带附件头；越界 400 |
 | DELETE | `/api/admin/files` | 删除 `data/` 下的单个文件 `?path=` |
 | GET | `/api/admin/uploaders` | 谁上传了什么：按人汇总 + 最近动作流水 `?limit=` |
@@ -480,12 +500,12 @@ Web 版结果更贴近原始轮廓，但点数更多。需要完全一致可后�
 | GET | `/api/projects` | 当前账号的工程列表；`?owner=` 指定账号，管理员可用 `?scope=all` 看全部 |
 | POST | `/api/projects` | 新建工程 `{name,owner?}`（普通账号只能建自己的） |
 | PUT | `/api/projects` | 工程改名 `{name,new_name,owner?}`，目录与索引一起改；重名 409 |
-| DELETE | `/api/projects` | 删除工程 `{name,owner?}`（连同会话、图片、标注），返回删掉的会话数 |
-| GET | `/api/projects/detail` | 工程概览 `?owner=&name=`：会话列表、图片/标注数、标签集 |
-| POST | `/api/sessions` | 在 `?owner=&project=` 下新建会话目录，返回 `{session,owner,project}` |
-| GET | `/api/sessions` | 会话列表（**JSON 数组**），支持 `?owner=&project=`（普通账号只能看自己的；管理员不传 owner 看全部） |
+| DELETE | `/api/projects` | 删除工程 `{name,owner?}`（连同图片、标注），返回 1 |
+| GET | `/api/projects/detail` | 工程概览 `?owner=&name=`：图片/标注数、标签集、固定工作空间 id |
+| POST | `/api/sessions` | 返回 `?owner=&project=` 对应的**固定工作空间**（幂等，不会新建目录） |
+| GET | `/api/sessions` | 工作空间列表（**JSON 数组**）；一个工程一条，id 形如 `workspace-xxxxxxxxxxxx` |
 | POST | `/api/sessions/{s}/images` | 上传图像，multipart 字段名 `files`，可多文件，重名自动加 `-1` |
-| GET | `/api/sessions/{s}/images` | 会话内图像列表 |
+| GET | `/api/sessions/{s}/images` | 当前工作空间（工程根目录）图像列表 |
 | GET | `/api/sessions/{s}/raw/{name}` | 取原图 |
 | DELETE | `/api/sessions/{s}/images/{name}` | 删除图像及其同名 `.json` |
 | GET | `/api/sessions/{s}/annotations/{name}` | 读标注（无则 404） |
@@ -494,7 +514,7 @@ Web 版结果更贴近原始轮廓，但点数更多。需要完全一致可后�
 | PUT | `/api/sessions/{s}/drafts/{name}` | 写崩溃草稿（`fsync` 落盘），body `{shapes,flags,imageWidth,imageHeight,at}` |
 | GET | `/api/sessions/{s}/drafts/{name}` | 读草稿，附带 `stale`（标注比草稿新则为 true） |
 | DELETE | `/api/sessions/{s}/drafts/{name}` | 删除草稿（保存成功后前端会调用） |
-| GET | `/api/recent` | 最近一次动过的会话/图像，供强杀、蓝屏后接回；支持 `?owner=` |
+| GET | `/api/recent` | 最近一次动过的工程/图像，供强杀、蓝屏后接回；支持 `?owner=` |
 | GET | `/api/labels` | 读**工程级**标签集（`data/<owner>/<project>/labels.txt`），支持 `?owner=&project=` |
 | PUT | `/api/labels` | 写工程标签集，body `{"labels":[...]}`，支持 `?owner=&project=` |
 | GET | `/api/flags` | 读工程级 flag 定义（`data/<owner>/<project>/flags.txt`），支持 `?owner=&project=` |

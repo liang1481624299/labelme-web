@@ -1,18 +1,18 @@
 """labelme-web backend.
 
 Source deployment only (no docker). Serves the static frontend, the annotation
-API, and the account/admin API. Disk layout (one user, one project, one
-browser session per folder):
+API, and the account/admin API. Disk layout is account → project → files:
 
-    data/<username>/<project>/20260101013030/114.jpg
-    data/<username>/<project>/20260101013030/114.json
+    data/<username>/<project>/114.jpg
+    data/<username>/<project>/114.json
 
 ``114.json`` is written in labelme 7.11.0's own format, with ``imagePath``
 pointing at the image file in the same folder, so the folder can be copied
 straight into the desktop build and opened as an Annotation Folder.
 
-会话 id（14 位时间戳）→ 真实路径 的映射存在 SQLite 索引里（见 workspace.py），
-老布局 ``data/<时间戳>/`` 会在第一个管理员存在后自动迁移。
+工程内只有一个固定工作空间（session id 形如 ``workspace-xxxxxxxxxxxx``），
+API 仍保留 ``/api/sessions/{session}/...`` 这样前端不用重写；用户界面不再有会话层。
+老布局 ``data/<时间戳>/`` 和工程内的旧会话目录会自动拍平到工程根目录。
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import json
 import os
 import re
 import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -29,9 +30,9 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, Response, Uploa
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend import activity, auth, workspace
+from backend import activity, auth, settings_store, workspace
 
-MAX_UPLOAD_MB = int(os.environ.get("LABELME_WEB_MAX_UPLOAD_MB", "200"))
+DEFAULT_MAX_UPLOAD_MB = int(os.environ.get("LABELME_WEB_MAX_UPLOAD_MB", "200"))
 LABELME_VERSION = "7.11.0"
 LABELS_MAX = 500
 LABEL_MAXLEN = 120
@@ -54,6 +55,15 @@ app.include_router(auth.admin_router)
 
 
 # ---------------------------------------------------------------- helpers
+def upload_max_mb() -> int:
+    raw = settings_store.get("upload.max_mb", "LABELME_WEB_MAX_UPLOAD_MB", str(DEFAULT_MAX_UPLOAD_MB))
+    try:
+        value = int(raw)
+    except ValueError:
+        value = DEFAULT_MAX_UPLOAD_MB
+    return max(1, min(value, 4096))
+
+
 def safe_name(filename: str) -> str:
     name = os.path.basename(filename.replace("\\", "/"))
     name = name.replace("\x00", "").strip()
@@ -144,8 +154,9 @@ def _folder(session: str, request: Optional[Request] = None) -> Path:
     return folder
 
 
-def _session_info(folder: Path) -> Dict[str, str]:
-    return {"session": folder.name, "owner": folder.parent.parent.name, "project": folder.parent.name}
+def _session_info(session: str, folder: Path) -> Dict[str, str]:
+    owner, project = _place(session)
+    return {"session": session, "owner": owner, "project": project}
 
 
 # ---------------------------------------------------------------- sessions
@@ -301,7 +312,7 @@ async def upload_images(session: str, request: Request, files: List[UploadFile] 
     folder = _folder(session, request)
     owner, project = _place(session)
     actor = _actor(request)
-    limit = MAX_UPLOAD_MB * 1024 * 1024
+    limit = upload_max_mb() * 1024 * 1024
     saved: List[str] = []
     for upload in files:
         name = safe_name(upload.filename or "")
@@ -314,7 +325,7 @@ async def upload_images(session: str, request: Request, files: List[UploadFile] 
         target.write_bytes(data)
         saved.append(target.name)
         activity.record(actor, "upload", owner, project, session, target.name, len(data))
-    info = _session_info(folder)
+    info = _session_info(session, folder)
     return {"session": session, "saved": saved, **info}
 
 
@@ -329,7 +340,7 @@ def list_images(session: str, request: Request) -> Dict[str, Any]:
         }
         for path in workspace.image_files(folder)
     ]
-    return {"session": session, "images": items, **_session_info(folder)}
+    return {"session": session, "images": items, **_session_info(session, folder)}
 
 
 @app.get("/api/sessions/{session}/raw/{name}")
@@ -634,45 +645,30 @@ def _entry(path: Path, owner: str = "", project: str = "", session: str = "") ->
 @app.get("/api/admin/files")
 def admin_files(request: Request, owner: Optional[str] = None, project: Optional[str] = None,
                 session: Optional[str] = None, path: Optional[str] = None) -> Dict[str, Any]:
-    """管理员文件浏览器：按层级列目录，回答"data 下面到底有什么、谁传的"。
+    """管理员文件浏览器：账号 → 工程 → 文件（不再有会话层）。
 
-    不传参数 → 列账号目录；给 owner → 列工程；给 owner+project → 列会话；
-    给 owner+project+session → 列该会话里的文件（带上传人）。
+    不传参数 → 列账号目录；给 owner → 列工程；给 owner+project → 列工程里的文件。
     """
     _admin_ok(request)
+    workspace.auto_migrate()
     root = DATA_DIR.resolve()
     entries: List[Dict[str, Any]] = []
-    place = {"owner": owner or "", "project": project or "", "session": session or ""}
+    place = {"owner": owner or "", "project": project or "", "session": ""}
 
-    if owner and project and session:
-        folder = _rel(Path(owner) / project / session)
+    if owner and project:
+        folder = _rel(Path(owner) / project)
         if not folder.is_dir():
-            raise HTTPException(status_code=404, detail="目录不存在")
-        who = activity.for_place(owner, project, session)
+            raise HTTPException(status_code=404, detail="工程不存在")
+        who = activity.for_place(owner, project)
         for child in sorted(folder.iterdir(), key=lambda p: (p.is_dir(), p.name.lower())):
-            if child.name.startswith("."):
+            if child.name.startswith(".") or child.is_dir():
                 continue
-            item = _entry(child, owner, project, session)
+            item = _entry(child, owner, project)
             meta = who.get(child.name)
             if meta:
                 item["last_actor"] = meta["actor"]
                 item["last_event"] = meta["event"]
                 item["last_at"] = meta["at"]
-            entries.append(item)
-        place_label = f"{owner} / {project} / {session}"
-    elif owner and project:
-        folder = _rel(Path(owner) / project)
-        if not folder.is_dir():
-            raise HTTPException(status_code=404, detail="工程不存在")
-        for child in sorted(folder.iterdir(), key=lambda p: p.name):
-            if not child.is_dir() or child.name.startswith("."):
-                continue
-            imgs = workspace.image_files(child)
-            jsons = [p for p in child.glob("*.json")]
-            item = _entry(child, owner, project, child.name)
-            item.update({"images": len(imgs), "annotations": len(jsons)})
-            actors = {v["actor"] for k, v in activity.for_place(owner, project, child.name).items() if v.get("actor")}
-            item["actors"] = sorted(actors)
             entries.append(item)
         place_label = f"{owner} / {project}"
     elif owner:
@@ -682,10 +678,10 @@ def admin_files(request: Request, owner: Optional[str] = None, project: Optional
         for child in sorted(folder.iterdir(), key=lambda p: p.name):
             if not child.is_dir() or child.name.startswith("."):
                 continue
-            sessions = [p for p in child.iterdir() if p.is_dir() and not p.name.startswith(".")]
             item = _entry(child, owner, child.name)
-            item["sessions"] = len(sessions)
-            item["images"] = sum(len(workspace.image_files(p)) for p in sessions)
+            item["projects"] = 1
+            item["images"] = len(workspace.image_files(child))
+            item["annotations"] = len(list(child.glob("*.json")))
             entries.append(item)
         place_label = owner
     else:
@@ -695,13 +691,14 @@ def admin_files(request: Request, owner: Optional[str] = None, project: Optional
             projects = [p for p in child.iterdir() if p.is_dir() and not p.name.startswith(".")]
             item = _entry(child, child.name)
             item["projects"] = len(projects)
-            item["sessions"] = sum(1 for proj in projects for p in proj.iterdir() if p.is_dir() and not p.name.startswith("."))
-            item["images"] = sum(len(workspace.image_files(s)) for proj in projects for s in proj.iterdir() if s.is_dir())
+            item["images"] = sum(len(workspace.image_files(proj)) for proj in projects)
+            item["annotations"] = sum(len(list(proj.glob("*.json"))) for proj in projects)
             entries.append(item)
         place_label = "data/"
 
+    target = root / place["owner"] / place["project"]
     return {"place": place, "label": place_label, "entries": entries,
-            "path": path or _rel_str(root / place["owner"] / place["project"] / place["session"])}
+            "path": path or _rel_str(target)}
 
 
 @app.get("/api/admin/files/raw")
@@ -732,7 +729,7 @@ def admin_file_delete(request: Request, path: str) -> Dict[str, Any]:
     parts = _rel_str(target.parent).split("/")
     owner = parts[0] if len(parts) > 0 else ""
     project = parts[1] if len(parts) > 1 else ""
-    session = parts[2] if len(parts) > 2 else ""
+    session = workspace.workspace_id(owner, project) if owner and project else ""
     activity.record(_actor(request), "delete", owner, project, session, target.name, size, "管理员删除文件")
     return {"deleted": path, "size": size}
 
@@ -746,6 +743,166 @@ def admin_uploaders(request: Request, limit: int = 200) -> Dict[str, Any]:
         "by_actor": activity.uploads_by_actor(),
         "recent": activity.recent(limit=limit),
     }
+
+
+# ---------------------------------------------------------------- system settings
+@app.get("/api/admin/system-config")
+def get_system_config(request: Request) -> Dict[str, Any]:
+    _admin_ok(request)
+    return {
+        "site_name": settings_store.get("site.name", "", "Labelme"),
+        "upload_max_mb": upload_max_mb(),
+        "allow_registration": settings_store.get("allow_registration", "LABELME_WEB_ALLOW_REGISTRATION", "1").lower()
+        in {"1", "true", "yes", "on"},
+        "image_suffixes": sorted(IMAGE_SUFFIXES),
+        "labelme_version": LABELME_VERSION,
+    }
+
+
+@app.put("/api/admin/system-config")
+def put_system_config(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    _admin_ok(request)
+    saved: List[str] = []
+    values: Dict[str, str] = {}
+    if "site_name" in payload:
+        name = str(payload.get("site_name") or "").strip()
+        if len(name) > 40:
+            raise HTTPException(status_code=400, detail="站点名称最多 40 个字")
+        values["site.name"] = name or "Labelme"
+        saved.append("site_name")
+    if "upload_max_mb" in payload:
+        try:
+            limit = int(payload.get("upload_max_mb"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="上传上限要填整数 MB")
+        if limit < 1 or limit > 4096:
+            raise HTTPException(status_code=400, detail="上传上限需在 1–4096 MB 之间")
+        values["upload.max_mb"] = str(limit)
+        saved.append("upload_max_mb")
+    if "allow_registration" in payload:
+        values["allow_registration"] = "1" if payload.get("allow_registration") else "0"
+        saved.append("allow_registration")
+    if values:
+        settings_store.set_many(values)
+    return {**get_system_config(request), "saved": saved}
+
+
+# ---------------------------------------------------------------- AI config
+AI_DEFAULT_MODELS = ["efficientsam:10m", "sam:100m", "sam2:small", "sam3:latest", "yoloworld:latest"]
+
+
+def _ai_models() -> List[str]:
+    raw = settings_store.get("ai.models", "", "\n".join(AI_DEFAULT_MODELS))
+    items = [line.strip() for line in re.split(r"[\n,，]+", raw) if line.strip()]
+    return items[:50] or AI_DEFAULT_MODELS
+
+
+def _ai_config(admin: bool = False) -> Dict[str, Any]:
+    enabled = settings_store.get_bool("ai.enabled", "", False)
+    endpoint = settings_store.get("ai.endpoint", "", "")
+    key = settings_store.get("ai.api_key", "", "")
+    model = settings_store.get("ai.model", "", "sam2:small")
+    try:
+        timeout = max(3, min(int(settings_store.get("ai.timeout", "", "30")), 300))
+    except ValueError:
+        timeout = 30
+    out: Dict[str, Any] = {
+        "enabled": enabled,
+        "endpoint": endpoint,
+        "endpoint_configured": bool(endpoint),
+        "model": model,
+        "models": _ai_models(),
+        "timeout": timeout,
+        "api_key_set": bool(key),
+    }
+    if admin:
+        out["api_key"] = settings_store.mask(key)
+    return out
+
+
+@app.get("/api/admin/ai-config")
+def get_ai_config(request: Request) -> Dict[str, Any]:
+    _admin_ok(request)
+    return _ai_config(admin=True)
+
+
+@app.put("/api/admin/ai-config")
+def put_ai_config(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """只存配置；真正的推理服务由部署方提供（见 README 的 /health 约定）。"""
+    _admin_ok(request)
+    values: Dict[str, str] = {}
+    saved: List[str] = []
+    if "enabled" in payload:
+        values["ai.enabled"] = "1" if payload.get("enabled") else "0"
+        saved.append("enabled")
+    if "endpoint" in payload:
+        endpoint = str(payload.get("endpoint") or "").strip().rstrip("/")
+        if endpoint and not re.match(r"^https?://", endpoint):
+            raise HTTPException(status_code=400, detail="服务地址必须以 http:// 或 https:// 开头")
+        values["ai.endpoint"] = endpoint
+        saved.append("endpoint")
+    if "model" in payload:
+        model = str(payload.get("model") or "").strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="默认模型不能为空")
+        values["ai.model"] = model[:80]
+        saved.append("model")
+    if "models" in payload:
+        raw = payload.get("models")
+        if isinstance(raw, list):
+            raw = "\n".join(str(x).strip() for x in raw)
+        models = [line.strip() for line in re.split(r"[\n,，]+", str(raw or "")) if line.strip()]
+        if not models:
+            raise HTTPException(status_code=400, detail="至少保留一个模型")
+        values["ai.models"] = "\n".join(models[:50])
+        saved.append("models")
+    if "timeout" in payload:
+        try:
+            timeout = int(payload.get("timeout"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="超时要填整数秒")
+        if timeout < 3 or timeout > 300:
+            raise HTTPException(status_code=400, detail="超时需在 3–300 秒之间")
+        values["ai.timeout"] = str(timeout)
+        saved.append("timeout")
+    if "api_key" in payload:
+        key = str(payload.get("api_key") or "").strip()
+        if key:
+            values["ai.api_key"] = key
+            saved.append("api_key")
+    if values:
+        settings_store.set_many(values)
+    return {**_ai_config(admin=True), "saved": saved}
+
+
+@app.delete("/api/admin/ai-config")
+def clear_ai_config(request: Request) -> Dict[str, Any]:
+    _admin_ok(request)
+    settings_store.delete([
+        "ai.enabled", "ai.endpoint", "ai.model", "ai.models", "ai.api_key", "ai.timeout",
+    ])
+    return {**_ai_config(admin=True), "saved": ["cleared"]}
+
+
+@app.post("/api/admin/ai-config/test")
+def test_ai_config(request: Request) -> Dict[str, Any]:
+    """探一下推理服务的健康检查：GET <endpoint>/health，2xx 即视为可达。"""
+    _admin_ok(request)
+    config = _ai_config()
+    endpoint = config["endpoint"]
+    if not endpoint:
+        return {"ok": False, "detail": "还没有配置推理服务地址"}
+    url = endpoint if endpoint.endswith("/health") else endpoint + "/health"
+    headers = {"Accept": "application/json"}
+    key = settings_store.get("ai.api_key", "", "")
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=config["timeout"]) as resp:
+            body = resp.read(300).decode("utf-8", "replace")
+            return {"ok": 200 <= resp.status < 300, "status": resp.status, "detail": body or "OK", "url": url}
+    except Exception as exc:
+        return {"ok": False, "detail": str(exc)[:300], "url": url}
 
 
 # ---------------------------------------------------------------- pages

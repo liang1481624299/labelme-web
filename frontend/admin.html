@@ -36,6 +36,9 @@
       <button class="nav-item" data-view="projects" type="button"><span class="ico">📁</span>工程管理</button>
       <button class="nav-item" data-view="files" type="button"><span class="ico">🗂</span>文件资源管理器</button>
       <button class="nav-item" data-view="uploads" type="button"><span class="ico">📤</span>上传流水</button>
+      <div class="nav-group">系统与 AI</div>
+      <button class="nav-item" data-view="settings" type="button"><span class="ico">⚙</span>系统设置</button>
+      <button class="nav-item" data-view="ai" type="button"><span class="ico">✨</span>AI 模型</button>
       <div class="nav-empty" id="navEmpty" hidden>没有匹配的菜单</div>
     </nav>
 
@@ -322,7 +325,7 @@
             </form>
             <table class="table">
               <thead>
-                <tr><th>账号</th><th>工程</th><th>会话数</th><th>创建时间</th><th>操作</th></tr>
+                <tr><th>账号</th><th>工程</th><th>状态</th><th>创建时间</th><th>操作</th></tr>
               </thead>
               <tbody id="projectRows"></tbody>
             </table>
@@ -336,7 +339,7 @@
         <div class="page-head">
           <div class="crumb">工程与文件 <i>›</i> 文件资源管理器</div>
           <h2>文件资源管理器</h2>
-          <p>逐层浏览 data/ 下的账号、工程、会话，直接下载或删除。</p>
+          <p>逐层浏览 data/ 下的账号、工程与文件，直接下载或删除。</p>
         </div>
         <section class="panel">
           <header>
@@ -375,11 +378,92 @@
             <div class="stats" id="uploaderStats"></div>
             <table class="table">
               <thead>
-                <tr><th>时间</th><th>谁</th><th>动作</th><th>账号 / 工程 / 会话</th><th>文件</th><th>大小</th></tr>
+                <tr><th>时间</th><th>谁</th><th>动作</th><th>账号 / 工程</th><th>文件</th><th>大小</th></tr>
               </thead>
               <tbody id="eventRows"></tbody>
             </table>
             <div class="admin-msg" id="eventMsg"></div>
+          </div>
+        </section>
+      </section>
+      <!-- ======================================================== 系统设置 -->
+      <section class="page" data-page="settings" hidden>
+        <div class="page-head">
+          <div class="crumb">系统与 AI <i>›</i> 系统设置</div>
+          <h2>系统设置</h2>
+          <p>站点名称、单文件上传上限与注册开关，保存后立即生效，无需重启服务。</p>
+        </div>
+        <section class="panel">
+          <header>
+            <span>常规</span>
+            <span class="spacer"></span>
+            <span class="tag" id="systemState">—</span>
+          </header>
+          <div class="panel-body">
+            <form class="config-grid" id="systemForm">
+              <label>站点名称
+                <input id="siteName" type="text" maxlength="40" placeholder="Labelme" />
+              </label>
+              <label>单文件上传上限（MB）
+                <input id="uploadMaxMb" type="number" min="1" max="4096" placeholder="200" />
+              </label>
+              <label class="check">允许新账号自助注册
+                <input id="systemAllowRegistration" type="checkbox" />
+              </label>
+              <div class="config-actions">
+                <button class="btn btn-primary" id="btnSaveSystem" type="submit">保存设置</button>
+              </div>
+            </form>
+            <p class="hint">支持的图像格式：<span id="systemSuffixes">—</span>；当前版本 <span id="systemVersion">—</span>。</p>
+            <div class="admin-msg" id="systemMsg"></div>
+          </div>
+        </section>
+      </section>
+
+      <!-- ========================================================= AI 模型 -->
+      <section class="page" data-page="ai" hidden>
+        <div class="page-head">
+          <div class="crumb">系统与 AI <i>›</i> AI 模型</div>
+          <h2>AI 模型</h2>
+          <p>统一保存模型与推理服务的连接参数，由管理员维护；Web 标注页的 AI 推理尚未接入。</p>
+        </div>
+        <section class="panel">
+          <header>
+            <span>推理服务</span>
+            <span class="spacer"></span>
+            <span class="tag" id="aiState">—</span>
+          </header>
+          <div class="panel-body">
+            <p class="hint">
+              服务需实现 <code>GET /health</code> 健康检查；模型名由服务端解释。配置只负责保存与连通性测试，
+              真正的分割推理由该服务完成（Web 后端本身不加载 SAM 权重）。
+            </p>
+            <form class="config-grid" id="aiForm">
+              <label class="check">启用 AI 辅助
+                <input id="aiEnabled" type="checkbox" />
+              </label>
+              <label>推理服务地址
+                <input id="aiEndpoint" type="text" placeholder="http://127.0.0.1:8081" />
+              </label>
+              <label>默认模型
+                <input id="aiModel" type="text" placeholder="sam2:small" />
+              </label>
+              <label>可用模型（逗号或换行分隔）
+                <textarea id="aiModels" rows="4" placeholder="efficientsam:10m&#10;sam2:small&#10;sam3:latest"></textarea>
+              </label>
+              <label>API Key（可空）
+                <input id="aiApiKey" type="password" autocomplete="new-password" placeholder="留空 = 不修改" />
+              </label>
+              <label>超时（秒）
+                <input id="aiTimeout" type="number" min="3" max="300" placeholder="30" />
+              </label>
+              <div class="config-actions">
+                <button class="btn btn-primary" id="btnSaveAi" type="submit">保存</button>
+                <button class="btn" id="btnTestAi" type="button">测试连接</button>
+                <button class="btn btn-danger" id="btnClearAi" type="button">恢复默认</button>
+              </div>
+            </form>
+            <div class="admin-msg" id="aiMsg"></div>
           </div>
         </section>
       </section>
