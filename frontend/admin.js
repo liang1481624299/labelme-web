@@ -649,9 +649,11 @@ function renderFiles(entries) {
     const countCell = document.createElement('td');
     if (entry.type === 'dir') {
       if (entry.images !== undefined) {
-        countCell.textContent = fsPlace.project
-          ? `${entry.images} 张图 / ${entry.annotations ?? 0} 个标注`
-          : `${entry.images} 张图 / ${entry.sessions ?? 0} 个会话`;
+        const parts = [`${entry.images} 张图`];
+        if (entry.annotations !== undefined) parts.push(`${entry.annotations} 个标注`);
+        if (entry.sessions !== undefined) parts.push(`${entry.sessions} 个会话`);
+        if (entry.projects !== undefined) parts.push(`${entry.projects} 个工程`);
+        countCell.textContent = parts.join(' / ');
       } else {
         countCell.textContent = `${entry.entries ?? 0} 项`;
       }
