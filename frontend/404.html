@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>404 · 页面不存在</title>
+  <style>
+    :root {
+      --bg: #17181c;
+      --panel: #202127;
+      --line: #31333b;
+      --text: #e8eaf0;
+      --faint: #9aa1b0;
+      --accent: #5aa9ff;
+      --accent-soft: rgba(90, 169, 255, .14);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      background:
+        radial-gradient(900px 480px at 50% -10%, rgba(90, 169, 255, .10), transparent 70%),
+        var(--bg);
+      color: var(--text);
+      font: 15px/1.65 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    .card {
+      width: min(640px, 100%);
+      padding: 42px 40px 36px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,.03), transparent 40%), var(--panel);
+      box-shadow: 0 24px 70px rgba(0,0,0,.36);
+      text-align: center;
+    }
+    .mark {
+      width: 54px;
+      height: 54px;
+      margin: 0 auto 18px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #191a1f;
+    }
+    .mark i { border-radius: 3px; background: #343743; }
+    .mark i:nth-child(1), .mark i:nth-child(5), .mark i:nth-child(9) {
+      background: var(--accent);
+      box-shadow: 0 0 12px rgba(90, 169, 255, .35);
+    }
+    .code {
+      font-size: 64px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: .06em;
+      color: var(--accent);
+      text-shadow: 0 0 30px rgba(90, 169, 255, .22);
+    }
+    h1 { margin: 14px 0 6px; font-size: 22px; font-weight: 600; }
+    p { margin: 0 auto; max-width: 430px; color: var(--faint); }
+    .actions { display: flex; justify-content: center; gap: 10px; margin-top: 26px; flex-wrap: wrap; }
+    a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 116px;
+      padding: 9px 18px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: var(--text);
+      text-decoration: none;
+      background: #26272e;
+      transition: border-color .15s, background .15s;
+    }
+    a:hover { border-color: #4c5260; background: #2c2e36; }
+    a.primary { border-color: rgba(90, 169, 255, .55); background: var(--accent-soft); color: #cfe6ff; }
+    .hint { margin-top: 22px; font-size: 12px; color: #707787; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="code">404</div>
+    <h1>这个页面不存在</h1>
+    <p>地址可能输错了，或者对应的工程、文件已经被移动。回到标注页重新打开一次即可。</p>
+    <div class="actions">
+      <a class="primary" href="/">回到标注页</a>
+      <a href="/login">重新登录</a>
+    </div>
+    <div class="hint">Labelme Web · 工程内直接访问图像与标注</div>
+  </main>
+</body>
+</html>

@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import Body, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend import activity, auth, settings_store, workspace
 
@@ -788,36 +789,121 @@ def put_system_config(request: Request, payload: Dict[str, Any] = Body(...)) -> 
 
 
 # ---------------------------------------------------------------- AI config
-AI_DEFAULT_MODELS = ["efficientsam:10m", "sam:100m", "sam2:small", "sam3:latest", "yoloworld:latest"]
+# 与桌面版「AI 模型」对话框保持同一套模型命名：SAM 家族为主，另留一个
+# OpenAI 兼容接口的位置（只存配置，Web 端推理尚未接入）。
+AI_MODEL_CATALOG: List[Dict[str, Any]] = [
+    {"id": "sam2:base+", "name": "SAM 2 Base+", "caps": "点 · 框",
+     "note": "点提示和框提示下速度与质量的最佳平衡。", "recommended": True,
+     "license": "Apache License 2.0", "family": "sam"},
+    {"id": "sam3:latest", "name": "SAM 3", "caps": "点 · 框 · 文本提示",
+     "note": "最适合文本提示和查找多个对象。", "recommended": True,
+     "license": "SAM License", "family": "sam"},
+    {"id": "efficientsam:tiny", "name": "EfficientSAM Tiny", "caps": "点 · 框",
+     "note": "最轻量，适合低配机器。", "license": "Apache License 2.0", "family": "sam"},
+    {"id": "efficientsam:small", "name": "EfficientSAM Small", "caps": "点 · 框",
+     "note": "轻量版，速度优先。", "license": "Apache License 2.0", "family": "sam"},
+    {"id": "sam2:small", "name": "SAM 2 Small", "caps": "点 · 框",
+     "note": "SAM 2 轻量模型。", "license": "Apache License 2.0", "family": "sam"},
+    {"id": "sam2:large", "name": "SAM 2 Large", "caps": "点 · 框",
+     "note": "SAM 2 大模型，质量更高、更吃显存。", "license": "Apache License 2.0", "family": "sam"},
+    {"id": "sam:base", "name": "SAM Base", "caps": "点 · 框",
+     "note": "初代 SAM Base。", "license": "Apache License 2.0", "family": "sam"},
+    {"id": "sam:large", "name": "SAM Large", "caps": "点 · 框",
+     "note": "初代 SAM Large。", "license": "Apache License 2.0", "family": "sam"},
+    {"id": "sam:huge", "name": "SAM Huge", "caps": "点 · 框",
+     "note": "初代 SAM 最大模型。", "license": "Apache License 2.0", "family": "sam"},
+    {"id": "yoloworld:latest", "name": "YOLO-World", "caps": "文本提示",
+     "note": "开放词表检测，适合按文字找目标。", "license": "GNU General Public License v3.0",
+     "family": "detect"},
+]
+AI_DEFAULT_MODELS = [m["id"] for m in AI_MODEL_CATALOG]
+AI_DEFAULT_MODEL = "sam2:base+"
 
 
 def _ai_models() -> List[str]:
-    raw = settings_store.get("ai.models", "", "\n".join(AI_DEFAULT_MODELS))
-    items = [line.strip() for line in re.split(r"[\n,，]+", raw) if line.strip()]
-    return items[:50] or AI_DEFAULT_MODELS
+    return list(AI_DEFAULT_MODELS)
+
+
+def _ai_provider() -> str:
+    provider = settings_store.get("ai.provider", "", "sam").lower()
+    return provider if provider in {"sam", "openai"} else "sam"
+
+
+def _read_timeout(key: str, env_name: str = "", default: str = "30") -> int:
+    try:
+        return max(3, min(int(settings_store.get(key, env_name, default)), 300))
+    except ValueError:
+        return 30
 
 
 def _ai_config(admin: bool = False) -> Dict[str, Any]:
     enabled = settings_store.get_bool("ai.enabled", "", False)
-    endpoint = settings_store.get("ai.endpoint", "", "")
-    key = settings_store.get("ai.api_key", "", "")
-    model = settings_store.get("ai.model", "", "sam2:small")
-    try:
-        timeout = max(3, min(int(settings_store.get("ai.timeout", "", "30")), 300))
-    except ValueError:
-        timeout = 30
-    out: Dict[str, Any] = {
-        "enabled": enabled,
-        "endpoint": endpoint,
-        "endpoint_configured": bool(endpoint),
-        "model": model,
+    provider = _ai_provider()
+    # 旧库只有 ai.endpoint / ai.model / ai.api_key，读的时候平滑迁移到 SAM 段
+    sam_endpoint = settings_store.get("ai.sam.endpoint", "", settings_store.get("ai.endpoint", "", ""))
+    sam_model = settings_store.get("ai.sam.model", "", settings_store.get("ai.model", "", AI_DEFAULT_MODEL))
+    sam_key = settings_store.get("ai.sam.api_key", "", settings_store.get("ai.api_key", "", ""))
+    sam_timeout = _read_timeout("ai.sam.timeout", "", settings_store.get("ai.timeout", "", "30"))
+    openai_base = settings_store.get("ai.openai.base_url", "LABELME_WEB_OPENAI_BASE_URL", "")
+    openai_model = settings_store.get("ai.openai.model", "LABELME_WEB_OPENAI_MODEL", "")
+    openai_key = settings_store.get("ai.openai.api_key", "LABELME_WEB_OPENAI_API_KEY", "")
+    openai_timeout = _read_timeout("ai.openai.timeout", "", "30")
+
+    sam: Dict[str, Any] = {
+        "endpoint": sam_endpoint,
+        "endpoint_configured": bool(sam_endpoint),
+        "model": sam_model,
         "models": _ai_models(),
-        "timeout": timeout,
-        "api_key_set": bool(key),
+        "timeout": sam_timeout,
+        "api_key_set": bool(sam_key),
+    }
+    openai: Dict[str, Any] = {
+        "base_url": openai_base,
+        "base_url_configured": bool(openai_base),
+        "model": openai_model,
+        "timeout": openai_timeout,
+        "api_key_set": bool(openai_key),
+        "reserved": True,
     }
     if admin:
-        out["api_key"] = settings_store.mask(key)
+        sam["api_key"] = settings_store.mask(sam_key)
+        openai["api_key"] = settings_store.mask(openai_key)
+
+    out: Dict[str, Any] = {
+        "enabled": enabled,
+        "provider": provider,
+        "providers": ["sam", "openai"],
+        "sam": sam,
+        "openai": openai,
+        "catalog": AI_MODEL_CATALOG,
+        # 兼容旧前端/旧脚本的扁平字段（指向 SAM）
+        "endpoint": sam_endpoint,
+        "endpoint_configured": bool(sam_endpoint),
+        "model": sam_model,
+        "models": _ai_models(),
+        "timeout": sam_timeout,
+        "api_key_set": bool(sam_key),
+    }
+    if admin:
+        out["api_key"] = settings_store.mask(sam_key)
     return out
+
+
+def _check_endpoint(value: str, label: str) -> str:
+    endpoint = str(value or "").strip().rstrip("/")
+    if endpoint and not re.match(r"^https?://", endpoint):
+        raise HTTPException(status_code=400, detail=f"{label}必须以 http:// 或 https:// 开头")
+    return endpoint
+
+
+def _check_timeout(value: Any) -> int:
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="超时要填整数秒")
+    if timeout < 3 or timeout > 300:
+        raise HTTPException(status_code=400, detail="超时需在 3–300 秒之间")
+    return timeout
 
 
 @app.get("/api/admin/ai-config")
@@ -832,44 +918,68 @@ def put_ai_config(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
     _admin_ok(request)
     values: Dict[str, str] = {}
     saved: List[str] = []
+
     if "enabled" in payload:
         values["ai.enabled"] = "1" if payload.get("enabled") else "0"
         saved.append("enabled")
-    if "endpoint" in payload:
-        endpoint = str(payload.get("endpoint") or "").strip().rstrip("/")
-        if endpoint and not re.match(r"^https?://", endpoint):
-            raise HTTPException(status_code=400, detail="服务地址必须以 http:// 或 https:// 开头")
-        values["ai.endpoint"] = endpoint
-        saved.append("endpoint")
-    if "model" in payload:
-        model = str(payload.get("model") or "").strip()
+    if "provider" in payload:
+        provider = str(payload.get("provider") or "").strip().lower()
+        if provider not in {"sam", "openai"}:
+            raise HTTPException(status_code=400, detail="provider 只能是 sam 或 openai")
+        values["ai.provider"] = provider
+        saved.append("provider")
+
+    sam = payload.get("sam") if isinstance(payload.get("sam"), dict) else {}
+    openai = payload.get("openai") if isinstance(payload.get("openai"), dict) else {}
+    # 兼容旧的扁平提交：endpoint/model/timeout/api_key 视作 SAM 段
+    if not sam:
+        sam = {k: payload.get(k) for k in ("endpoint", "model", "timeout", "api_key") if k in payload}
+
+    if "endpoint" in sam:
+        values["ai.sam.endpoint"] = _check_endpoint(sam.get("endpoint"), "SAM 服务地址")
+        saved.append("sam.endpoint")
+    if "model" in sam:
+        model = str(sam.get("model") or "").strip()
         if not model:
-            raise HTTPException(status_code=400, detail="默认模型不能为空")
-        values["ai.model"] = model[:80]
-        saved.append("model")
-    if "models" in payload:
-        raw = payload.get("models")
-        if isinstance(raw, list):
-            raw = "\n".join(str(x).strip() for x in raw)
-        models = [line.strip() for line in re.split(r"[\n,，]+", str(raw or "")) if line.strip()]
-        if not models:
-            raise HTTPException(status_code=400, detail="至少保留一个模型")
-        values["ai.models"] = "\n".join(models[:50])
-        saved.append("models")
-    if "timeout" in payload:
-        try:
-            timeout = int(payload.get("timeout"))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="超时要填整数秒")
-        if timeout < 3 or timeout > 300:
-            raise HTTPException(status_code=400, detail="超时需在 3–300 秒之间")
-        values["ai.timeout"] = str(timeout)
-        saved.append("timeout")
-    if "api_key" in payload:
-        key = str(payload.get("api_key") or "").strip()
+            raise HTTPException(status_code=400, detail="SAM 默认模型不能为空")
+        values["ai.sam.model"] = model[:80]
+        saved.append("sam.model")
+    if "timeout" in sam:
+        values["ai.sam.timeout"] = str(_check_timeout(sam.get("timeout")))
+        saved.append("sam.timeout")
+    if "api_key" in sam:
+        key = str(sam.get("api_key") or "").strip()
         if key:
-            values["ai.api_key"] = key
-            saved.append("api_key")
+            values["ai.sam.api_key"] = key
+            saved.append("sam.api_key")
+
+    if "base_url" in openai:
+        values["ai.openai.base_url"] = _check_endpoint(openai.get("base_url"), "OpenAI 兼容地址")
+        saved.append("openai.base_url")
+    if "model" in openai:
+        model = str(openai.get("model") or "").strip()
+        if model:
+            values["ai.openai.model"] = model[:80]
+            saved.append("openai.model")
+    if "timeout" in openai:
+        values["ai.openai.timeout"] = str(_check_timeout(openai.get("timeout")))
+        saved.append("openai.timeout")
+    if "api_key" in openai:
+        key = str(openai.get("api_key") or "").strip()
+        if key:
+            values["ai.openai.api_key"] = key
+            saved.append("openai.api_key")
+
+    # 扁平字段仍写一份旧键，保证旧脚本和已有备份能读
+    if "endpoint" in sam:
+        values["ai.endpoint"] = values["ai.sam.endpoint"]
+    if "model" in sam:
+        values["ai.model"] = values["ai.sam.model"]
+    if "timeout" in sam:
+        values["ai.timeout"] = values["ai.sam.timeout"]
+    if "api_key" in sam and "ai.sam.api_key" in values:
+        values["ai.api_key"] = values["ai.sam.api_key"]
+
     if values:
         settings_store.set_many(values)
     return {**_ai_config(admin=True), "saved": saved}
@@ -879,30 +989,53 @@ def put_ai_config(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
 def clear_ai_config(request: Request) -> Dict[str, Any]:
     _admin_ok(request)
     settings_store.delete([
-        "ai.enabled", "ai.endpoint", "ai.model", "ai.models", "ai.api_key", "ai.timeout",
+        "ai.enabled", "ai.provider", "ai.models",
+        "ai.endpoint", "ai.model", "ai.api_key", "ai.timeout",
+        "ai.sam.endpoint", "ai.sam.model", "ai.sam.api_key", "ai.sam.timeout",
+        "ai.openai.base_url", "ai.openai.model", "ai.openai.api_key", "ai.openai.timeout",
     ])
     return {**_ai_config(admin=True), "saved": ["cleared"]}
 
 
 @app.post("/api/admin/ai-config/test")
-def test_ai_config(request: Request) -> Dict[str, Any]:
-    """探一下推理服务的健康检查：GET <endpoint>/health，2xx 即视为可达。"""
+def test_ai_config(request: Request, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """探一下推理服务：
+    - SAM：GET <endpoint>/health，2xx 即视为可达；
+    - OpenAI 兼容：GET <base_url>/models，2xx 即视为可达。
+    """
     _admin_ok(request)
     config = _ai_config()
-    endpoint = config["endpoint"]
-    if not endpoint:
-        return {"ok": False, "detail": "还没有配置推理服务地址"}
-    url = endpoint if endpoint.endswith("/health") else endpoint + "/health"
-    headers = {"Accept": "application/json"}
-    key = settings_store.get("ai.api_key", "", "")
+    provider = str((payload or {}).get("provider") or config["provider"]).lower()
+    if provider not in {"sam", "openai"}:
+        provider = "sam"
+
+    if provider == "openai":
+        base = config["openai"]["base_url"]
+        if not base:
+            return {"ok": False, "provider": provider, "detail": "还没有配置 OpenAI 兼容接口地址"}
+        base = base.rstrip("/")
+        url = base if base.endswith("/models") else base + "/models"
+        headers = {"Accept": "application/json"}
+        key = settings_store.get("ai.openai.api_key", "LABELME_WEB_OPENAI_API_KEY", "")
+        timeout = config["openai"]["timeout"]
+    else:
+        endpoint = config["sam"]["endpoint"]
+        if not endpoint:
+            return {"ok": False, "provider": provider, "detail": "还没有配置 SAM 推理服务地址"}
+        url = endpoint if endpoint.endswith("/health") else endpoint + "/health"
+        headers = {"Accept": "application/json"}
+        key = settings_store.get("ai.sam.api_key", "", settings_store.get("ai.api_key", "", ""))
+        timeout = config["sam"]["timeout"]
+
     if key:
         headers["Authorization"] = "Bearer " + key
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=config["timeout"]) as resp:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as resp:
             body = resp.read(300).decode("utf-8", "replace")
-            return {"ok": 200 <= resp.status < 300, "status": resp.status, "detail": body or "OK", "url": url}
+            return {"ok": 200 <= resp.status < 300, "provider": provider, "status": resp.status,
+                    "detail": body or "OK", "url": url}
     except Exception as exc:
-        return {"ok": False, "detail": str(exc)[:300], "url": url}
+        return {"ok": False, "provider": provider, "detail": str(exc)[:300], "url": url}
 
 
 # ---------------------------------------------------------------- pages
@@ -935,4 +1068,22 @@ def page_admin(request: Request) -> Response:
 
 
 # ---------------------------------------------------------------- static frontend
+@app.exception_handler(StarletteHTTPException)
+async def page_http_error(request: Request, exc: StarletteHTTPException) -> Response:
+    """API 仍返回 JSON；页面路径 404 时给一张独立错误页，不再回退到首页。"""
+    if (exc.status_code == 404 and not request.url.path.startswith("/api/")
+            and not Path(request.url.path).suffix):
+        page = FRONTEND_DIR / "404.html"
+        if page.is_file():
+            return FileResponse(str(page), status_code=404, media_type="text/html")
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+
+
+@app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+               include_in_schema=False)
+def api_not_found(rest: str) -> Response:
+    """未匹配的 /api/* 一律 JSON 404，不能被前端静态挂载吞成页面。"""
+    return JSONResponse({"detail": "接口不存在"}, status_code=404)
+
+
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

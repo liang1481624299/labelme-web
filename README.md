@@ -5,7 +5,7 @@
 
 - 后端：FastAPI + uvicorn，**源码部署**
 - 网关：NGINX 反向代理，进程守护用 **systemd**，**不使用 docker**
-- 前端：`frontend/` 三个文件（`index.html` / `styles.css` / `app.js`），原生 JS，无构建步骤
+- 前端：`frontend/` 下的静态页面与原生 JS（`index.html` / `login.html` / `admin.html` / `404.html`），无构建步骤
 
 ## 目录结构
 
@@ -24,6 +24,7 @@ labelme-web/
 │   ├── login.js
 │   ├── admin.html        # /admin 管理面板（无入口，只能手敲链接）
 │   ├── admin.js
+│   ├── 404.html          # 不存在的页面（后端与 dev/serve 都返回真 404）
 │   └── auth.css          # 登录页与管理面板样式
 ├── dev/
 │   └── serve.py          # 本地开发前置：9630 静态 + /api 反代到 9631
@@ -167,8 +168,13 @@ data/shiroko/电路板A/114.json    ← 该图的标注
 - **工程与文件**：工程管理（工程表：详情 / 改名 / 删除、批量建同名工程）、文件资源管理器、
   上传流水（谁上传了什么）；
 - **系统与 AI**：系统设置（站点名称、单文件上传上限、自助注册开关，保存后即时生效）、
-  AI 模型（推理服务地址、默认模型、可用模型列表、API Key 遮罩、超时，带「保存 / 测试连接 /
-  恢复默认」）。
+  AI 模型（SAM 提供方与 OpenAI 兼容接口两套配置；SAM 内置与桌面版一致的 10 个模型目录：
+  SAM 2 Base+ / SAM 3 / EfficientSAM / SAM 2 / SAM / YOLO-World，可选模型、填推理服务地址、
+  API Key 遮罩与超时，带「保存 / 测试当前提供方 / 恢复默认」；OpenAI 兼容接口只预留连接信息，
+  暂不参与推理）。
+
+不存在的页面路径返回独立 `frontend/404.html`（HTTP 状态码真为 404），不会悄悄回退成首页；
+`/api/*` 的未知路径仍然返回 JSON 404。开发用的 `dev/serve.py` 与生产 FastAPI 静态托管行为一致。
 
 文件资源管理器按 `data/ → 账号 → 工程 → 文件` 逐层点进去，每层给出大小、条目数 /
 图片数、修改时间；到文件层会显示**最后一个动这个文件的人**（上传 / 保存标注 / 删除），
@@ -441,12 +447,16 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 - 保存选项：自动保存开关、撤销步数（默认 20）、把图像 base64 内嵌到 JSON（`imageData`）、切换图像时保留亮度/对比度
 - 形状锁定（Ctrl+Shift+L）：锁定状态写入 JSON 的 `locked` 字段，重开图像后仍然生效
 - 标签集：菜单「导出 / 导入标签集（labels.txt）」
-- 视图：十字准星开关、允许点在图像外（`allow_out_of_bounds_points`）、显示/隐藏侧边面板、重置面板布局
+- 视图：十字准星开关、允许点在图像外（`allow_out_of_bounds_points`）、显示/隐藏侧边面板、重置面板布局；
+  滚轮与按钮缩放固定以图像中心为锚点，画面不随鼠标位置漂移；绘制中的矩形/圆/多边形预览实时裁到图像边界
 
 **未对标**：`AI-Segment`、`AI-Find All`、SAM 模型下拉与「模型管理」（`open_models`）。这些依赖服务端 SAM 权重与 GPU，
 纯 Web 源码部署没有模型可用，标注页的 AI 入口仍置灰。管理后台已经提供 **AI 模型**配置页：
-可以保存推理服务地址、默认模型、可用模型列表、API Key 与超时，并用 `GET <endpoint>/health`
-做连通性测试；但真正的分割推理尚未接入 Web 标注页（后端不加载 torch/SAM 权重）。
+SAM 这一段内置了与桌面版一致的模型目录（SAM 2 Base+、SAM 3、EfficientSAM Tiny/Small、
+SAM 2 Small/Large、SAM Base/Large/Huge、YOLO-World），可以选择默认模型、保存推理服务地址、
+API Key 与超时，并用 `GET <endpoint>/health` 做连通性测试；另有一套 OpenAI 兼容接口配置
+（地址、模型、Key、超时）作为预留，只保存不参与标注。真正的分割推理尚未接入 Web 标注页
+（后端不加载 torch/SAM 权重）。
 要打通需要在服务端部署一个实现 `/health` 的推理服务，再补 `/api/ai/segment` 代理与前端点选交互。
 
 其余有意不做或形态不同、不影响标注结果的差异：
@@ -481,10 +491,10 @@ Web 版结果更贴近原始轮廓，但点数更多。需要完全一致可后�
 | POST | `/api/admin/auth-config/test` | 连通性测试 `{kind:'ldap'|'sso'}` |
 | GET | `/api/admin/system-config` | 站点名称、上传上限、注册开关、支持格式（仅管理员） |
 | PUT | `/api/admin/system-config` | 保存 `{site_name?, upload_max_mb?, allow_registration?}`，即时生效 |
-| GET | `/api/admin/ai-config` | AI 配置（API Key 遮罩，仅管理员） |
-| PUT | `/api/admin/ai-config` | 保存 `{enabled, endpoint, model, models, timeout, api_key?}` |
+| GET | `/api/admin/ai-config` | AI 配置：`provider`、`sam` / `openai` 两段、10 个模型目录（API Key 遮罩，仅管理员） |
+| PUT | `/api/admin/ai-config` | 保存 `{enabled, provider, sam:{endpoint,model,timeout,api_key?}, openai:{base_url,model,timeout,api_key?}}`；旧扁平字段仍兼容 |
 | DELETE | `/api/admin/ai-config` | 清掉 AI 配置，恢复默认 |
-| POST | `/api/admin/ai-config/test` | 请求 `<endpoint>/health` 做连通性测试 |
+| POST | `/api/admin/ai-config/test` | `{provider:'sam'|'openai'}`：SAM 请求 `/health`，OpenAI 兼容请求 `/models` |
 | GET | `/api/admin/files` | 文件浏览器：`?owner=&project=` 逐层列目录（带大小/时间/上传人），已无会话层 |
 | GET | `/api/admin/files/raw` | 读取 `data/` 下的单个文件 `?path=`，`&download=1` 带附件头；越界 400 |
 | DELETE | `/api/admin/files` | 删除 `data/` 下的单个文件 `?path=` |

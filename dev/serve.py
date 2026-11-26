@@ -67,14 +67,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         if target.is_dir():
             target = target / "index.html"
+        status = 200
         if not target.is_file():
-            # 单页应用不存在的路径一律回 index.html
-            target = FRONTEND / "index.html"
+            # 不存在的页面给独立 404，不要悄悄回退成首页；缺的是资源文件则只回纯文本
+            if Path(path).suffix:
+                self._send_text(404, "not found")
+                return
+            page404 = FRONTEND / "404.html"
+            if page404.is_file():
+                target = page404
+                status = 404
+            else:
+                target = FRONTEND / "index.html"
         body = target.read_bytes()
         ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in {"application/javascript", "application/json"}:
             ctype += "; charset=utf-8"
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")

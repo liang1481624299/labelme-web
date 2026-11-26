@@ -163,6 +163,14 @@ function imgToScreen(p) {
   return [p[0] * view.zoom + view.tx, p[1] * view.zoom + view.ty];
 }
 
+function clampPointToImage(x, y) {
+  if (!state.image || state.allowOob) return [x, y];
+  return [
+    Math.min(state.image.w, Math.max(0, x)),
+    Math.min(state.image.h, Math.max(0, y)),
+  ];
+}
+
 function fitToWindow() {
   if (!state.image) return;
   const w = wrap.clientWidth;
@@ -176,17 +184,15 @@ function fitToWindow() {
   redraw();
 }
 
-function zoomAt(factor, cx, cy) {
+function zoomAt(factor) {
   if (!state.image) return;
-  const w = wrap.clientWidth;
-  const h = wrap.clientHeight;
-  const px = cx === undefined ? w / 2 : cx;
-  const py = cy === undefined ? h / 2 : cy;
-  const before = { x: (px - view.tx) / view.zoom, y: (py - view.ty) / view.zoom };
+  // 以图像中心为锚点：滚轮/按钮放大缩小时画面不跟着鼠标漂移
+  const anchorX = view.tx + state.image.w * view.zoom / 2;
+  const anchorY = view.ty + state.image.h * view.zoom / 2;
   const next = clamp(view.zoom * factor, 0.02, 40);
   view.zoom = next;
-  view.tx = px - before.x * next;
-  view.ty = py - before.y * next;
+  view.tx = anchorX - state.image.w * next / 2;
+  view.ty = anchorY - state.image.h * next / 2;
   updateZoomLabel();
   redraw();
 }
@@ -944,11 +950,9 @@ canvas.addEventListener('pointerdown', (ev) => {
 
   const pt = clientToImage(ev.clientX, ev.clientY);
   const tool = state.tool;
-  if (!state.allowOob && state.image) {
-    // 桌面版默认不允许越界点：落到图上之前先裁到图像范围
-    pt.x = Math.min(state.image.w, Math.max(0, pt.x));
-    pt.y = Math.min(state.image.h, Math.max(0, pt.y));
-  }
+  const [cx, cy] = clampPointToImage(pt.x, pt.y);
+  pt.x = cx;
+  pt.y = cy;
 
   if (isDrawingTool()) {
     // 双击结束：第二次 pointerdown 不再补点，直接用已有点位闭合
@@ -1036,14 +1040,10 @@ canvas.addEventListener('pointermove', (ev) => {
   }
 
   if (state.drawing) {
-    if (state.drawing.type === 'rectangle' || state.drawing.type === 'line') {
-      state.drawing.cursor = [pt.x, pt.y];
-      if (state.drawing.points.length === 0) {
-        // drag mode not started yet
-      }
-    } else {
-      state.drawing.cursor = [pt.x, pt.y];
-    }
+    // 预览框也必须限制在图像内：鼠标拖到画布外时框停在图片边界，
+    // 不能先画出界再在松手时“跳回来”
+    const [cx, cy] = clampPointToImage(pt.x, pt.y);
+    state.drawing.cursor = [cx, cy];
     redraw();
   }
 
@@ -1112,9 +1112,8 @@ canvas.addEventListener('contextmenu', (ev) => {
 canvas.addEventListener('wheel', (ev) => {
   if (!state.image) return;
   ev.preventDefault();
-  const r = canvas.getBoundingClientRect();
   const factor = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
-  zoomAt(factor, ev.clientX - r.left, ev.clientY - r.top);
+  zoomAt(factor);
 }, { passive: false });
 
 function handleDrawClick(tool, pt, ev) {

@@ -829,35 +829,129 @@ $('systemForm').addEventListener('submit', async (event) => {
 });
 
 /* -------------------------------------------------------------- AI 模型 */
+let aiConfig = null;
+let aiProvider = 'sam';
+
+function selectedSamModel() {
+  const picked = document.querySelector('#aiModelGrid input[name="samModel"]:checked');
+  return picked ? picked.value : (aiConfig?.sam?.model || 'sam2:base+');
+}
+
+function samModelName(id) {
+  const hit = (aiConfig?.catalog || []).find((m) => m.id === id);
+  return hit ? hit.name : id;
+}
+
+function renderAiCatalog(cfg) {
+  const box = $('aiModelGrid');
+  const catalog = cfg.catalog || [];
+  const current = cfg.sam?.model || 'sam2:base+';
+  box.innerHTML = '';
+  catalog.forEach((model) => {
+    const card = document.createElement('label');
+    card.className = 'model-card' + (model.id === current ? ' selected' : '');
+    const rec = model.recommended ? '<span class="rec">推荐</span>' : '';
+    card.innerHTML = `${rec}
+      <input type="radio" name="samModel" value="${model.id}" ${model.id === current ? 'checked' : ''} />
+      <b>${model.name}</b>
+      <span class="caps">${model.caps || ''}</span>
+      <p class="note">${model.note || ''}</p>
+      <span class="lic">许可：${model.license || ''}</span>`;
+    card.querySelector('input').addEventListener('change', () => {
+      box.querySelectorAll('.model-card').forEach((el) => el.classList.toggle('selected', el === card));
+      updateAiState();
+    });
+    box.appendChild(card);
+  });
+  if (!catalog.length) {
+    box.innerHTML = '<div class="empty-cell">后端没有返回模型目录</div>';
+  }
+}
+
+function setAiProvider(provider) {
+  aiProvider = provider === 'openai' ? 'openai' : 'sam';
+  $('aiProviders').querySelectorAll('.provider-card').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.provider === aiProvider);
+  });
+  document.querySelectorAll('[data-ai-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.aiPanel !== aiProvider;
+  });
+  $('aiProviderNote').innerHTML = aiProvider === 'openai'
+    ? 'OpenAI 兼容接口只保存连接信息，不会向标注页发起请求；测试连接会请求 <code>/models</code>。'
+    : 'SAM 服务需实现 <code>GET /health</code>；Web 后端只保存配置并做连通测试，真正的分割推理由该服务完成。';
+  updateAiState();
+}
+
+function updateAiState() {
+  const el = $('aiState');
+  if (!aiConfig) return;
+  if (!aiConfig.enabled) {
+    el.textContent = '未启用';
+    el.className = 'tag disabled';
+    return;
+  }
+  if (aiProvider === 'openai') {
+    el.textContent = '已配置 · OpenAI 兼容接口预留';
+  } else {
+    el.textContent = `已配置 · 待接入推理（${samModelName(selectedSamModel())}）`;
+  }
+  el.className = 'tag enabled';
+}
+
 async function loadAiConfig() {
   try {
     const cfg = await api('GET', '/api/admin/ai-config');
+    aiConfig = cfg;
     $('aiEnabled').checked = !!cfg.enabled;
-    $('aiEndpoint').value = cfg.endpoint || '';
-    $('aiModel').value = cfg.model || '';
-    $('aiModels').value = (cfg.models || []).join('\n');
-    $('aiTimeout').value = cfg.timeout || 30;
-    $('aiApiKey').value = '';
-    $('aiApiKey').placeholder = cfg.api_key_set ? '已设置（留空不修改）' : '留空 = 不设置';
-    $('aiState').textContent = cfg.enabled ? `已保存 · 待接入推理（${cfg.model || ''}）` : '未启用';
-    $('aiState').className = 'tag ' + (cfg.enabled ? 'enabled' : 'disabled');
+    renderAiCatalog(cfg);
+    $('aiSamEndpoint').value = cfg.sam?.endpoint || '';
+    $('aiSamTimeout').value = cfg.sam?.timeout || 30;
+    $('aiSamApiKey').value = '';
+    $('aiSamApiKey').placeholder = cfg.sam?.api_key_set ? '已设置（留空不修改）' : '留空 = 不设置';
+    $('aiOpenaiBase').value = cfg.openai?.base_url || '';
+    $('aiOpenaiModel').value = cfg.openai?.model || '';
+    $('aiOpenaiTimeout').value = cfg.openai?.timeout || 30;
+    $('aiOpenaiApiKey').value = '';
+    $('aiOpenaiApiKey').placeholder = cfg.openai?.api_key_set ? '已设置（留空不修改）' : '留空 = 不设置';
+    setAiProvider(cfg.provider || 'sam');
   } catch (err) {
     msg($('aiMsg'), err.message, false);
   }
 }
+
+$('aiProviders').addEventListener('click', (event) => {
+  const btn = event.target.closest('.provider-card');
+  if (btn) setAiProvider(btn.dataset.provider);
+});
+
+$('aiEnabled').addEventListener('change', () => {
+  if (aiConfig) {
+    aiConfig.enabled = $('aiEnabled').checked;
+    updateAiState();
+  }
+});
 
 $('aiForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   try {
     const body = {
       enabled: $('aiEnabled').checked,
-      endpoint: $('aiEndpoint').value.trim(),
-      model: $('aiModel').value.trim(),
-      models: $('aiModels').value,
-      timeout: Number($('aiTimeout').value),
+      provider: aiProvider,
+      sam: {
+        endpoint: $('aiSamEndpoint').value.trim(),
+        model: selectedSamModel(),
+        timeout: Number($('aiSamTimeout').value || 30),
+      },
+      openai: {
+        base_url: $('aiOpenaiBase').value.trim(),
+        model: $('aiOpenaiModel').value.trim(),
+        timeout: Number($('aiOpenaiTimeout').value || 30),
+      },
     };
-    const key = $('aiApiKey').value.trim();
-    if (key) body.api_key = key;
+    const samKey = $('aiSamApiKey').value.trim();
+    if (samKey) body.sam.api_key = samKey;
+    const openaiKey = $('aiOpenaiApiKey').value.trim();
+    if (openaiKey) body.openai.api_key = openaiKey;
     const res = await api('PUT', '/api/admin/ai-config', body);
     msg($('aiMsg'), `已保存：${(res.saved || []).join('、')}`, true);
     await loadAiConfig();
@@ -867,17 +961,20 @@ $('aiForm').addEventListener('submit', async (event) => {
 });
 
 $('btnTestAi').addEventListener('click', async () => {
-  msg($('aiMsg'), '正在测试…', true);
+  msg($('aiMsg'), `正在测试 ${aiProvider === 'openai' ? 'OpenAI 兼容接口' : 'SAM 服务'}…`, true);
   try {
-    const res = await api('POST', '/api/admin/ai-config/test');
-    msg($('aiMsg'), res.ok ? `服务可达（HTTP ${res.status}）：${res.detail}` : `连接失败：${res.detail}`, res.ok);
+    const res = await api('POST', '/api/admin/ai-config/test', { provider: aiProvider });
+    const label = res.provider === 'openai' ? 'OpenAI 兼容接口' : 'SAM 服务';
+    msg($('aiMsg'), res.ok
+      ? `${label}可达（HTTP ${res.status}）：${res.detail}`
+      : `${label}连接失败：${res.detail}`, res.ok);
   } catch (err) {
     msg($('aiMsg'), err.message, false);
   }
 });
 
 $('btnClearAi').addEventListener('click', async () => {
-  if (!confirm('恢复默认会清掉服务地址、模型列表和 API Key，确定？')) return;
+  if (!confirm('恢复默认会清掉 SAM 与 OpenAI 两套地址、模型和 API Key，确定？')) return;
   try {
     await api('DELETE', '/api/admin/ai-config');
     msg($('aiMsg'), '已恢复默认', true);

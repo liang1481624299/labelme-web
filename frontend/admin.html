@@ -425,47 +425,94 @@
         <div class="page-head">
           <div class="crumb">系统与 AI <i>›</i> AI 模型</div>
           <h2>AI 模型</h2>
-          <p>统一保存模型与推理服务的连接参数，由管理员维护；Web 标注页的 AI 推理尚未接入。</p>
+          <p>按桌面版同一套模型命名配置 SAM 推理服务；另留一个 OpenAI 兼容接口位置。Web 标注页的 AI 推理尚未接入。</p>
         </div>
-        <section class="panel">
-          <header>
-            <span>推理服务</span>
-            <span class="spacer"></span>
-            <span class="tag" id="aiState">—</span>
-          </header>
-          <div class="panel-body">
-            <p class="hint">
-              服务需实现 <code>GET /health</code> 健康检查；模型名由服务端解释。配置只负责保存与连通性测试，
-              真正的分割推理由该服务完成（Web 后端本身不加载 SAM 权重）。
-            </p>
-            <form class="config-grid" id="aiForm">
-              <label class="check">启用 AI 辅助
-                <input id="aiEnabled" type="checkbox" />
-              </label>
-              <label>推理服务地址
-                <input id="aiEndpoint" type="text" placeholder="http://127.0.0.1:8081" />
-              </label>
-              <label>默认模型
-                <input id="aiModel" type="text" placeholder="sam2:small" />
-              </label>
-              <label>可用模型（逗号或换行分隔）
-                <textarea id="aiModels" rows="4" placeholder="efficientsam:10m&#10;sam2:small&#10;sam3:latest"></textarea>
-              </label>
-              <label>API Key（可空）
-                <input id="aiApiKey" type="password" autocomplete="new-password" placeholder="留空 = 不修改" />
-              </label>
-              <label>超时（秒）
-                <input id="aiTimeout" type="number" min="3" max="300" placeholder="30" />
-              </label>
-              <div class="config-actions">
-                <button class="btn btn-primary" id="btnSaveAi" type="submit">保存</button>
-                <button class="btn" id="btnTestAi" type="button">测试连接</button>
-                <button class="btn btn-danger" id="btnClearAi" type="button">恢复默认</button>
+
+        <form id="aiForm">
+          <section class="panel">
+            <header>
+              <span>模型提供方</span>
+              <span class="spacer"></span>
+              <span class="tag" id="aiState">—</span>
+            </header>
+            <div class="panel-body">
+              <div class="provider-grid" id="aiProviders">
+                <button class="provider-card active" type="button" data-provider="sam">
+                  <span class="provider-top"><b>SAM</b><em>推荐</em></span>
+                  <span>点提示、框提示与文本提示分割，覆盖 SAM / SAM 2 / SAM 3 / EfficientSAM。</span>
+                </button>
+                <button class="provider-card" type="button" data-provider="openai">
+                  <span class="provider-top"><b>OpenAI 兼容</b><em class="muted">预留</em></span>
+                  <span>留给通用多模态模型或自建 OpenAI 兼容网关，暂不参与标注推理。</span>
+                </button>
               </div>
-            </form>
-            <div class="admin-msg" id="aiMsg"></div>
+              <label class="check ai-enable">
+                <input id="aiEnabled" type="checkbox" />
+                启用 AI 辅助（配置保存后生效）
+              </label>
+              <p class="hint" id="aiProviderNote">
+                SAM 服务需实现 <code>GET /health</code>；Web 后端只保存配置并做连通测试，真正的分割推理由该服务完成。
+              </p>
+            </div>
+          </section>
+
+          <section class="panel" data-ai-panel="sam">
+            <header>
+              <span>SAM 模型</span>
+              <span class="spacer"></span>
+              <span class="tag">服务端模型</span>
+            </header>
+            <div class="panel-body">
+              <p class="hint">模型权重由 SAM 推理服务自己管理；网页只保存“用哪个模型”的选择和连接参数，不在浏览器里下载权重。</p>
+              <div class="model-grid" id="aiModelGrid"></div>
+              <div class="config-grid ai-fields">
+                <label class="wide">SAM 推理服务地址
+                  <input id="aiSamEndpoint" type="text" placeholder="http://127.0.0.1:8081" />
+                </label>
+                <label>API Key（可空）
+                  <input id="aiSamApiKey" type="password" autocomplete="new-password" placeholder="留空 = 不修改" />
+                </label>
+                <label>超时（秒）
+                  <input id="aiSamTimeout" type="number" min="3" max="300" placeholder="30" />
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" data-ai-panel="openai" hidden>
+            <header>
+              <span>OpenAI 兼容接口</span>
+              <span class="spacer"></span>
+              <span class="tag">预留 · 未接入推理</span>
+            </header>
+            <div class="panel-body">
+              <p class="hint">
+                这里只保存连接信息，不会向标注页发起请求。地址填到 <code>/v1</code> 即可，测试连接会请求 <code>/models</code>。
+              </p>
+              <div class="config-grid ai-fields">
+                <label class="wide">接口地址
+                  <input id="aiOpenaiBase" type="text" placeholder="https://api.openai.com/v1" />
+                </label>
+                <label>模型名
+                  <input id="aiOpenaiModel" type="text" placeholder="gpt-4.1-mini" />
+                </label>
+                <label>API Key（可空）
+                  <input id="aiOpenaiApiKey" type="password" autocomplete="new-password" placeholder="留空 = 不修改" />
+                </label>
+                <label>超时（秒）
+                  <input id="aiOpenaiTimeout" type="number" min="3" max="300" placeholder="30" />
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <div class="config-actions ai-actions">
+            <button class="btn btn-primary" id="btnSaveAi" type="submit">保存配置</button>
+            <button class="btn" id="btnTestAi" type="button">测试当前提供方</button>
+            <button class="btn btn-danger" id="btnClearAi" type="button">恢复默认</button>
           </div>
-        </section>
+          <div class="admin-msg" id="aiMsg"></div>
+        </form>
       </section>
     </div>
   </main>
