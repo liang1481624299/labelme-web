@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,7 +29,7 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, Response, Uploa
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend import auth, workspace
+from backend import activity, auth, workspace
 
 MAX_UPLOAD_MB = int(os.environ.get("LABELME_WEB_MAX_UPLOAD_MB", "200"))
 LABELME_VERSION = "7.11.0"
@@ -277,11 +278,29 @@ def recent_session(
     return found
 
 
+def _place(session: str) -> tuple:
+    """会话 id → (owner, project)，只用于记录活动，不校验权限（调用方已校验过）。"""
+    try:
+        owner, project, _path = workspace.session_path(session)
+        return owner, project
+    except (ValueError, FileNotFoundError):
+        return "", ""
+
+
+def _actor(request: Request) -> str:
+    try:
+        return auth.current_user(request)["username"]
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------- images
 @app.post("/api/sessions/{session}/images")
 async def upload_images(session: str, request: Request, files: List[UploadFile] = File(...)) -> Dict[str, Any]:
     """Store original images (jpg/png/...) next to their future .json."""
     folder = _folder(session, request)
+    owner, project = _place(session)
+    actor = _actor(request)
     limit = MAX_UPLOAD_MB * 1024 * 1024
     saved: List[str] = []
     for upload in files:
@@ -294,6 +313,7 @@ async def upload_images(session: str, request: Request, files: List[UploadFile] 
         target = unique_target(folder, name)
         target.write_bytes(data)
         saved.append(target.name)
+        activity.record(actor, "upload", owner, project, session, target.name, len(data))
     info = _session_info(folder)
     return {"session": session, "saved": saved, **info}
 
@@ -330,6 +350,8 @@ def delete_image(session: str, name: str, request: Request) -> Dict[str, str]:
     for path in (folder / name, folder / (name + ".json"), draft_path(folder, name)):
         if path.is_file():
             path.unlink()
+    owner, project = _place(session)
+    activity.record(_actor(request), "delete", owner, project, session, name, 0, "删除图片及其标注")
     return {"deleted": name}
 
 
@@ -383,6 +405,10 @@ def put_annotation(
         if key not in normalized:
             normalized[key] = value
     write_json_durable(folder / (name + ".json"), normalized)
+    owner, project = _place(session)
+    activity.record(_actor(request), "annotate", owner, project, session, name + ".json",
+                    (folder / (name + ".json")).stat().st_size if (folder / (name + ".json")).is_file() else 0,
+                    "%d 个形状" % len(shapes))
     return {"saved": name + ".json", "shapes": len(shapes)}
 
 
@@ -546,6 +572,179 @@ def put_flags(
         "owner": target_owner,
         "project": target_project,
         "path": f"data/{target_owner}/{target_project}/flags.txt",
+    }
+
+
+# ---------------------------------------------------------------- admin file browser
+def _admin_ok(request: Request) -> Dict[str, Any]:
+    return auth.admin_guard(request)
+
+
+def _rel(value: str) -> Path:
+    """把前端传来的相对路径解析成 DATA_DIR 下的真实路径，越界一律 400。"""
+    root = DATA_DIR.resolve()
+    if not value:
+        return root
+    candidate = (root / value).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="路径越界")
+    return candidate
+
+
+def _rel_str(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(DATA_DIR.resolve()).as_posix()
+    except ValueError:
+        return ""
+
+
+def _entry(path: Path, owner: str = "", project: str = "", session: str = "") -> Dict[str, Any]:
+    is_dir = path.is_dir()
+    info: Dict[str, Any] = {
+        "name": path.name,
+        "type": "dir" if is_dir else "file",
+        "path": _rel_str(path),
+        "size": 0 if is_dir else path.stat().st_size,
+        "mtime": mtime(path) if is_dir else path.stat().st_mtime,
+    }
+    if is_dir:
+        try:
+            info["entries"] = sum(1 for child in path.iterdir() if not child.name.startswith("."))
+        except OSError:
+            info["entries"] = 0
+    else:
+        suffix = path.suffix.lower()
+        info["kind"] = (
+            "image" if suffix in IMAGE_SUFFIXES
+            else "annotation" if suffix == ".json" and not path.name.endswith(".draft.json")
+            else "labels" if path.name in {"labels.txt", "flags.txt"}
+            else "other"
+        )
+    if owner:
+        info["owner"] = owner
+    if project:
+        info["project"] = project
+    if session:
+        info["session"] = session
+    return info
+
+
+@app.get("/api/admin/files")
+def admin_files(request: Request, owner: Optional[str] = None, project: Optional[str] = None,
+                session: Optional[str] = None, path: Optional[str] = None) -> Dict[str, Any]:
+    """管理员文件浏览器：按层级列目录，回答"data 下面到底有什么、谁传的"。
+
+    不传参数 → 列账号目录；给 owner → 列工程；给 owner+project → 列会话；
+    给 owner+project+session → 列该会话里的文件（带上传人）。
+    """
+    _admin_ok(request)
+    root = DATA_DIR.resolve()
+    entries: List[Dict[str, Any]] = []
+    place = {"owner": owner or "", "project": project or "", "session": session or ""}
+
+    if owner and project and session:
+        folder = _rel(Path(owner) / project / session)
+        if not folder.is_dir():
+            raise HTTPException(status_code=404, detail="目录不存在")
+        who = activity.for_place(owner, project, session)
+        for child in sorted(folder.iterdir(), key=lambda p: (p.is_dir(), p.name.lower())):
+            if child.name.startswith("."):
+                continue
+            item = _entry(child, owner, project, session)
+            meta = who.get(child.name)
+            if meta:
+                item["last_actor"] = meta["actor"]
+                item["last_event"] = meta["event"]
+                item["last_at"] = meta["at"]
+            entries.append(item)
+        place_label = f"{owner} / {project} / {session}"
+    elif owner and project:
+        folder = _rel(Path(owner) / project)
+        if not folder.is_dir():
+            raise HTTPException(status_code=404, detail="工程不存在")
+        for child in sorted(folder.iterdir(), key=lambda p: p.name):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            imgs = workspace.image_files(child)
+            jsons = [p for p in child.glob("*.json")]
+            item = _entry(child, owner, project, child.name)
+            item.update({"images": len(imgs), "annotations": len(jsons)})
+            actors = {v["actor"] for k, v in activity.for_place(owner, project, child.name).items() if v.get("actor")}
+            item["actors"] = sorted(actors)
+            entries.append(item)
+        place_label = f"{owner} / {project}"
+    elif owner:
+        folder = _rel(Path(owner))
+        if not folder.is_dir():
+            raise HTTPException(status_code=404, detail="账号目录不存在")
+        for child in sorted(folder.iterdir(), key=lambda p: p.name):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            sessions = [p for p in child.iterdir() if p.is_dir() and not p.name.startswith(".")]
+            item = _entry(child, owner, child.name)
+            item["sessions"] = len(sessions)
+            item["images"] = sum(len(workspace.image_files(p)) for p in sessions)
+            entries.append(item)
+        place_label = owner
+    else:
+        for child in sorted(root.iterdir(), key=lambda p: p.name):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            projects = [p for p in child.iterdir() if p.is_dir() and not p.name.startswith(".")]
+            item = _entry(child, child.name)
+            item["projects"] = len(projects)
+            item["sessions"] = sum(1 for proj in projects for p in proj.iterdir() if p.is_dir() and not p.name.startswith("."))
+            item["images"] = sum(len(workspace.image_files(s)) for proj in projects for s in proj.iterdir() if s.is_dir())
+            entries.append(item)
+        place_label = "data/"
+
+    return {"place": place, "label": place_label, "entries": entries,
+            "path": path or _rel_str(root / place["owner"] / place["project"] / place["session"])}
+
+
+@app.get("/api/admin/files/raw")
+def admin_file_raw(request: Request, path: str, download: int = 0) -> Response:
+    """下载/预览 data 下的单个文件。只允许文件，不允许整个目录。"""
+    _admin_ok(request)
+    target = _rel(path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    name = target.name
+    disposition = "attachment" if download else "inline"
+    quoted = urllib.parse.quote(name)
+    return FileResponse(
+        str(target),
+        filename=name if download else None,
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{quoted}", "Cache-Control": "no-store"},
+    )
+
+
+@app.delete("/api/admin/files")
+def admin_file_delete(request: Request, path: str) -> Dict[str, Any]:
+    _admin_ok(request)
+    target = _rel(path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    size = target.stat().st_size
+    target.unlink()
+    parts = _rel_str(target.parent).split("/")
+    owner = parts[0] if len(parts) > 0 else ""
+    project = parts[1] if len(parts) > 1 else ""
+    session = parts[2] if len(parts) > 2 else ""
+    activity.record(_actor(request), "delete", owner, project, session, target.name, size, "管理员删除文件")
+    return {"deleted": path, "size": size}
+
+
+@app.get("/api/admin/uploaders")
+def admin_uploaders(request: Request, limit: int = 200) -> Dict[str, Any]:
+    """谁上传了什么：按人汇总 + 最近动作流水。"""
+    _admin_ok(request)
+    return {
+        "stats": activity.stats(),
+        "by_actor": activity.uploads_by_actor(),
+        "recent": activity.recent(limit=limit),
     }
 
 

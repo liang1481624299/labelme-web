@@ -140,6 +140,35 @@ html, body {
 }
 .auth-foot code { color: #9ecbe8; }
 
+.auth-sso { margin-top: 14px; text-align: center; }
+.auth-sso-or {
+  display: block;
+  position: relative;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.auth-sso-or::before, .auth-sso-or::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 40%;
+  border-top: 1px solid var(--border-soft);
+}
+.auth-sso-or::before { left: 0; }
+.auth-sso-or::after { right: 0; }
+.auth-sso-btn {
+  width: 100%;
+  padding: 10px 0;
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: #9ecbe8;
+  font: 600 14px/1 inherit;
+  cursor: pointer;
+}
+.auth-sso-btn:hover { background: rgba(10, 132, 255, .12); }
+
 /* ------------------------------------------------------------ 管理面板 */
 .admin-body {
   background: var(--bg);
@@ -253,6 +282,60 @@ html, body {
   font: 12px/1.7 ui-monospace, Consolas, monospace;
 }
 .empty-cell { color: var(--text-faint); text-align: center; }
+
+/* --------------------------------------------------- 管理后台分区 / 配置 */
+.admin-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.admin-tab {
+  padding: 8px 16px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-faint);
+  font: 13px/1 inherit;
+  cursor: pointer;
+}
+.admin-tab:hover { color: var(--text); }
+.admin-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+.admin-view[hidden] { display: none; }
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px 18px;
+}
+.config-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-faint); }
+.config-grid input, .config-grid select {
+  padding: 7px 9px;
+  background: #1b1b1b;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: 13px/1.4 inherit;
+}
+.config-grid .check { flex-direction: row; align-items: center; gap: 8px; }
+.config-grid .src { color: #7fb0d4; font-size: 11px; }
+.config-actions { grid-column: 1 / -1; display: flex; gap: 8px; margin-top: 4px; }
+
+.spacer { margin-left: auto; }
+
+.fs-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.fs-crumb { font: 12px/1.4 ui-monospace, Consolas, monospace; color: var(--text-faint); }
+.fs-name {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: #9ecbe8;
+  font: 13px/1.4 inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.fs-name:hover { text-decoration: underline; }
 
 @media (max-width: 720px) {
   .admin-body { padding: 14px; }

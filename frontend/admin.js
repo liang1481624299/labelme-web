@@ -52,6 +52,14 @@ function renderUsers(users) {
       nameCell.appendChild(badge);
     }
 
+    const sourceCell = document.createElement('td');
+    const sourceTag = document.createElement('span');
+    const source = user.source || 'local';
+    sourceTag.className = 'tag' + (source === 'local' ? '' : ' enabled');
+    sourceTag.textContent = source === 'ldap' ? 'LDAP' : source === 'sso' ? 'SSO' : '本地';
+    sourceTag.title = user.external_id || '';
+    sourceCell.appendChild(sourceTag);
+
     const roleCell = document.createElement('td');
     const roleSelect = document.createElement('select');
     roleSelect.innerHTML = '<option value="annotator">标注员</option><option value="admin">管理员</option>';
@@ -125,7 +133,7 @@ function renderUsers(users) {
     });
 
     actionCell.append(resetBtn, toggleBtn, delBtn);
-    row.append(nameCell, roleCell, stateCell, createdCell, loginCell, actionCell);
+    row.append(nameCell, sourceCell, roleCell, stateCell, createdCell, loginCell, actionCell);
     box.appendChild(row);
   });
 }
@@ -236,6 +244,12 @@ async function load() {
     const users = await api('GET', '/api/admin/users');
     renderUsers(users.users || []);
     await loadProjects();
+    try {
+      const up = await api('GET', '/api/admin/uploaders?limit=1');
+      $('statUploads').textContent = up.stats.uploads;
+    } catch (e) {
+      $('statUploads').textContent = '—';
+    }
   } catch (err) {
     msg($('listMsg'), err.message, false);
   }
@@ -382,4 +396,361 @@ $('btnLogout').addEventListener('click', async () => {
   location.replace('/login');
 });
 
+/* ---------------------------------------------------------------- 视图切换 */
+const loadedViews = new Set();
+
+function showView(name) {
+  document.querySelectorAll('.admin-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.view === name);
+  });
+  document.querySelectorAll('.admin-view').forEach((view) => {
+    view.hidden = view.dataset.view !== name;
+  });
+  if (name === 'ldap' && !loadedViews.has('ldap')) { loadedViews.add('ldap'); loadAuthConfig(); }
+  if (name === 'sso' && !loadedViews.has('sso')) { loadedViews.add('sso'); loadAuthConfig(); }
+  if (name === 'projects' && !loadedViews.has('projects')) {
+    loadedViews.add('projects');
+    loadUploaders();
+  }
+  if (name !== 'accounts') location.hash = name;
+}
+
+document.querySelectorAll('.admin-tab').forEach((tab) => {
+  tab.addEventListener('click', () => showView(tab.dataset.view));
+});
+
+/* ------------------------------------------------------------- LDAP / SSO */
+let authConfig = null;
+
+function fillSrcMap(section) {
+  document.querySelectorAll(`.src[data-src^="${section}."]`).forEach((el) => {
+    const field = el.dataset.src.split('.')[1];
+    const from = (authConfig[section].source || {})[field];
+    if (!from) { el.textContent = ''; el.title = ''; return; }
+    el.textContent = from === 'db' ? '（页面保存）' : '（环境变量）';
+  });
+}
+
+async function loadAuthConfig() {
+  try {
+    authConfig = await api('GET', '/api/admin/auth-config');
+    applyLdap(authConfig.ldap);
+    applySso(authConfig.sso);
+    fillSrcMap('ldap');
+    fillSrcMap('sso');
+  } catch (err) {
+    msg($('ldapMsg'), err.message, false);
+  }
+}
+
+function applyLdap(v) {
+  const on = !!v.enabled;
+  $('ldapState').textContent = on ? `已启用 · ${v.label || 'LDAP'}` : '未启用';
+  $('ldapState').className = 'tag ' + (on ? 'enabled' : 'disabled');
+  $('ldapUrl').value = v.url || '';
+  $('ldapBaseDn').value = v.base_dn || '';
+  $('ldapUserDn').value = v.user_dn || '';
+  $('ldapUserFilter').value = v.user_filter || '';
+  $('ldapBindDn').value = v.bind_dn || '';
+  $('ldapBindPassword').value = '';
+  $('ldapBindPassword').placeholder = v.bind_password_set ? '已设置（留空不修改）' : '留空 = 不修改';
+  $('ldapAdminGroup').value = v.admin_group || '';
+  $('ldapLabel').value = v.label || '';
+  $('ldapTimeout').value = v.timeout || '5';
+  $('ldapStarttls').checked = !!v.starttls;
+}
+
+function applySso(v) {
+  const on = !!v.enabled;
+  $('ssoState').textContent = on ? `已启用 · ${v.label || 'SSO'}` : '未启用';
+  $('ssoState').className = 'tag ' + (on ? 'enabled' : 'disabled');
+  $('ssoIssuer').value = v.issuer || '';
+  $('ssoClientId').value = v.client_id || '';
+  $('ssoClientSecret').value = '';
+  $('ssoClientSecret').placeholder = v.client_secret_set ? '已设置（留空不修改）' : '留空 = 不使用 secret（公开客户端）';
+  $('ssoScopes').value = v.scopes || '';
+  $('ssoRedirect').value = v.redirect_uri || '';
+  $('ssoAdminGroup').value = v.admin_group || '';
+  $('ssoUsernameClaim').value = v.username_claim || '';
+  $('ssoGroupsClaim').value = v.groups_claim || '';
+  $('ssoLabel').value = v.label || '';
+  $('ssoTokenAuth').value = v.token_auth || 'post';
+  $('ssoCallback').textContent = v.redirect_uri || (location.origin + '/api/auth/sso/callback');
+}
+
+async function saveSection(section, payload, msgId) {
+  try {
+    const res = await api('PUT', '/api/admin/auth-config', { [section]: payload });
+    authConfig = { ldap: res.ldap, sso: res.sso };
+    if (section === 'ldap') applyLdap(res.ldap); else applySso(res.sso);
+    fillSrcMap('ldap'); fillSrcMap('sso');
+    msg($(msgId), `已保存 ${res.saved.length} 项`, true);
+  } catch (err) {
+    msg($(msgId), err.message, false);
+  }
+}
+
+$('ldapForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  saveSection('ldap', {
+    url: $('ldapUrl').value, base_dn: $('ldapBaseDn').value,
+    user_dn: $('ldapUserDn').value, user_filter: $('ldapUserFilter').value,
+    bind_dn: $('ldapBindDn').value, bind_password: $('ldapBindPassword').value,
+    admin_group: $('ldapAdminGroup').value, label: $('ldapLabel').value,
+    timeout: $('ldapTimeout').value, starttls: $('ldapStarttls').checked,
+  }, 'ldapMsg');
+});
+
+$('btnTestLdap').addEventListener('click', async () => {
+  const btn = $('btnTestLdap');
+  btn.disabled = true;
+  msg($('ldapMsg'), '正在连接 LDAP…', true);
+  try {
+    const r = await api('POST', '/api/admin/auth-config/test', { kind: 'ldap' });
+    msg($('ldapMsg'), r.detail, r.ok === true);
+  } catch (err) {
+    msg($('ldapMsg'), err.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('btnResetLdap').addEventListener('click', async () => {
+  if (!confirm('清掉页面里保存的 LDAP 设置，回退到环境变量？')) return;
+  try {
+    const res = await api('DELETE', '/api/admin/auth-config?kind=ldap');
+    authConfig = { ldap: res.ldap, sso: res.sso };
+    applyLdap(res.ldap); fillSrcMap('ldap');
+    msg($('ldapMsg'), '已回退到环境变量', true);
+  } catch (err) {
+    msg($('ldapMsg'), err.message, false);
+  }
+});
+
+$('ssoForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  saveSection('sso', {
+    issuer: $('ssoIssuer').value, client_id: $('ssoClientId').value,
+    client_secret: $('ssoClientSecret').value, scopes: $('ssoScopes').value,
+    redirect_uri: $('ssoRedirect').value, admin_group: $('ssoAdminGroup').value,
+    username_claim: $('ssoUsernameClaim').value, groups_claim: $('ssoGroupsClaim').value,
+    label: $('ssoLabel').value, token_auth: $('ssoTokenAuth').value,
+  }, 'ssoMsg');
+});
+
+$('btnTestSso').addEventListener('click', async () => {
+  const btn = $('btnTestSso');
+  btn.disabled = true;
+  msg($('ssoMsg'), '正在拉 discovery 文档…', true);
+  try {
+    const r = await api('POST', '/api/admin/auth-config/test', { kind: 'sso' });
+    const lines = [r.detail];
+    if (r.ok) {
+      lines.push(`authorization：${r.authorization_endpoint}`);
+      lines.push(`token：${r.token_endpoint}`);
+      lines.push(`jwks：${r.jwks_uri}`);
+    }
+    msg($('ssoMsg'), lines.join('\n'), !!r.ok);
+  } catch (err) {
+    msg($('ssoMsg'), err.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('btnResetSso').addEventListener('click', async () => {
+  if (!confirm('清掉页面里保存的 SSO 设置，回退到环境变量？')) return;
+  try {
+    const res = await api('DELETE', '/api/admin/auth-config?kind=sso');
+    authConfig = { ldap: res.ldap, sso: res.sso };
+    applySso(res.sso); fillSrcMap('sso');
+    msg($('ssoMsg'), '已回退到环境变量', true);
+  } catch (err) {
+    msg($('ssoMsg'), err.message, false);
+  }
+});
+
+/* ------------------------------------------------------------ 文件浏览器 */
+const fsPlace = { owner: '', project: '', session: '' };
+
+function fmtSize(n) {
+  if (!n) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function crumb() {
+  const bits = ['data/'];
+  if (fsPlace.owner) bits.push(fsPlace.owner + '/');
+  if (fsPlace.project) bits.push(fsPlace.project + '/');
+  if (fsPlace.session) bits.push(fsPlace.session + '/');
+  $('fsCrumb').textContent = bits.join('');
+  $('fsPath').textContent = bits.join('');
+}
+
+async function loadFiles(place) {
+  Object.assign(fsPlace, { owner: '', project: '', session: '' }, place || {});
+  crumb();
+  const q = new URLSearchParams();
+  if (fsPlace.owner) q.set('owner', fsPlace.owner);
+  if (fsPlace.project) q.set('project', fsPlace.project);
+  if (fsPlace.session) q.set('session', fsPlace.session);
+  try {
+    const res = await api('GET', '/api/admin/files?' + q.toString());
+    renderFiles(res.entries || []);
+  } catch (err) {
+    msg($('fsMsg'), err.message, false);
+  }
+}
+
+function renderFiles(entries) {
+  const box = $('fsRows');
+  box.innerHTML = '';
+  if (!entries.length) {
+    box.innerHTML = '<tr><td colspan="7" class="empty-cell">这里是空的</td></tr>';
+    $('fsSummary').textContent = '';
+    return;
+  }
+  const dirs = entries.filter((e) => e.type === 'dir').length;
+  const files = entries.length - dirs;
+  const bytes = entries.reduce((sum, e) => sum + (e.type === 'file' ? e.size : 0), 0);
+  $('fsSummary').textContent = `${dirs} 个目录 · ${files} 个文件 · ${fmtSize(bytes)}`;
+
+  entries.forEach((entry) => {
+    const row = document.createElement('tr');
+    const nameCell = document.createElement('td');
+    const openBtn = document.createElement('button');
+    openBtn.className = 'fs-name';
+    openBtn.type = 'button';
+    openBtn.textContent = (entry.type === 'dir' ? '📁 ' : entry.kind === 'image' ? '🖼 ' : '📄 ') + entry.name;
+    if (entry.type === 'dir') {
+      openBtn.addEventListener('click', () => {
+        if (!fsPlace.owner) loadFiles({ owner: entry.name });
+        else if (!fsPlace.project) loadFiles({ owner: fsPlace.owner, project: entry.name });
+        else loadFiles({ owner: fsPlace.owner, project: fsPlace.project, session: entry.name });
+      });
+    } else {
+      openBtn.addEventListener('click', () => {
+        window.open('/api/admin/files/raw?path=' + encodeURIComponent(entry.path), '_blank');
+      });
+    }
+    nameCell.appendChild(openBtn);
+
+    const typeCell = document.createElement('td');
+    typeCell.textContent = entry.type === 'dir'
+      ? (fsPlace.session ? '会话目录' : fsPlace.project ? '会话' : fsPlace.owner ? '工程' : '账号目录')
+      : (entry.kind === 'image' ? '图片' : entry.kind === 'annotation' ? '标注' : entry.kind === 'labels' ? '标签集' : '文件');
+
+    const sizeCell = document.createElement('td');
+    sizeCell.textContent = entry.type === 'dir' ? '—' : fmtSize(entry.size);
+
+    const countCell = document.createElement('td');
+    if (entry.type === 'dir') {
+      if (entry.images !== undefined) {
+        countCell.textContent = fsPlace.project
+          ? `${entry.images} 张图 / ${entry.annotations ?? 0} 个标注`
+          : `${entry.images} 张图 / ${entry.sessions ?? 0} 个会话`;
+      } else {
+        countCell.textContent = `${entry.entries ?? 0} 项`;
+      }
+    } else {
+      countCell.textContent = '—';
+    }
+
+    const timeCell = document.createElement('td');
+    timeCell.textContent = entry.mtime ? new Date(entry.mtime * 1000).toLocaleString() : '—';
+
+    const whoCell = document.createElement('td');
+    if (entry.last_actor) {
+      whoCell.textContent = `${entry.last_actor} · ${entry.last_event === 'annotate' ? '标注' : entry.last_event === 'upload' ? '上传' : '删除'}`;
+    } else if (entry.actors && entry.actors.length) {
+      whoCell.textContent = entry.actors.join('、');
+    } else {
+      whoCell.textContent = '—';
+    }
+
+    const actionCell = document.createElement('td');
+    if (entry.type === 'file') {
+      const dl = document.createElement('button');
+      dl.className = 'btn btn-sm';
+      dl.textContent = '下载';
+      dl.addEventListener('click', () => {
+        location.href = '/api/admin/files/raw?path=' + encodeURIComponent(entry.path) + '&download=1';
+      });
+      const del = document.createElement('button');
+      del.className = 'btn btn-sm btn-danger';
+      del.textContent = '删除';
+      del.style.marginLeft = '6px';
+      del.addEventListener('click', async () => {
+        if (!confirm(`确认删除 ${entry.name}？不可恢复。`)) return;
+        try {
+          await api('DELETE', '/api/admin/files?path=' + encodeURIComponent(entry.path));
+          msg($('fsMsg'), `已删除 ${entry.name}`, true);
+          await loadFiles(fsPlace);
+        } catch (err) {
+          msg($('fsMsg'), err.message, false);
+        }
+      });
+      actionCell.append(dl, del);
+    }
+    row.append(nameCell, typeCell, sizeCell, countCell, timeCell, whoCell, actionCell);
+    box.appendChild(row);
+  });
+}
+
+$('fsUp').addEventListener('click', () => {
+  if (fsPlace.session) loadFiles({ owner: fsPlace.owner, project: fsPlace.project });
+  else if (fsPlace.project) loadFiles({ owner: fsPlace.owner });
+  else loadFiles({});
+});
+
+async function loadUploaders() {
+  try {
+    const res = await api('GET', '/api/admin/uploaders?limit=120');
+    $('uploaderStats').innerHTML = '';
+    const stats = res.stats || {};
+    [['上传总数', stats.uploads], ['涉及账号', stats.uploaders],
+     ['累计体积', fmtSize(stats.uploaded_bytes)], ['全部流水', stats.events]]
+      .forEach(([label, value]) => {
+        const box = document.createElement('div');
+        box.className = 'stat';
+        const b = document.createElement('b');
+        b.textContent = value ?? '—';
+        const span = document.createElement('span');
+        span.textContent = label;
+        box.append(b, span);
+        $('uploaderStats').appendChild(box);
+      });
+
+    const rows = res.recent || [];
+    $('eventRows').innerHTML = rows.length ? '' : '<tr><td colspan="6" class="empty-cell">还没有记录（新上传的图片会出现在这里）</td></tr>';
+    rows.forEach((ev) => {
+      const row = document.createElement('tr');
+      [
+        ev.at,
+        ev.actor,
+        ev.event === 'upload' ? '上传' : ev.event === 'annotate' ? '保存标注' : ev.event === 'delete' ? '删除' : ev.event,
+        [ev.owner, ev.project, ev.session].filter(Boolean).join(' / '),
+        ev.name,
+        ev.size ? fmtSize(ev.size) : '—',
+      ].forEach((text) => {
+        const td = document.createElement('td');
+        td.textContent = text || '—';
+        row.appendChild(td);
+      });
+      $('eventRows').appendChild(row);
+    });
+  } catch (err) {
+    msg($('eventMsg'), err.message, false);
+  }
+}
+
+/* 首次进入：默认账户页；工程管理页顺带把文件浏览器停在 data/ 根 */
+showView(['accounts', 'ldap', 'sso', 'projects'].includes((location.hash || '').replace('#', ''))
+  ? (location.hash || '').replace('#', '')
+  : 'accounts');
+if (!loadedViews.has('projects')) loadFiles({});
 load();
+

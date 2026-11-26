@@ -146,18 +146,24 @@ data/20260101013030/114.json    ← 该图的标注
 ### /admin 管理面板
 
 得手敲 `http://<host>:9630/admin`，**标注页和登录页都没有任何入口/链接**；服务端还会再校验一次
-角色（未登录跳登录页，非管理员 403）。面板能做：
+角色（未登录跳登录页，非管理员 403）。面板按四类分区（顶部标签切换、可带 `#ldap` 这类锚点直达）：
 
-- 看账号总数 / 启用数 / 管理员数；
-- 新建账号（指定角色与初始密码）；
-- 改角色、禁用/启用（禁用会立即踢掉该账号已登录的会话）；
-- 重置密码（同样踢掉旧会话，自己改自己保留当前登录）；
-- 删除账号；
-- 开/关“允许自助注册”；
-- **批量创号**：填数量（1–200）和可选起始 ID，账号名 = 8 位数字 ID、密码默认 = 同一个 ID
-  （纯数字 8 位正好满足密码下限）。明文密码只在那一次响应里出现，库里只有 bcrypt 哈希；
-  面板会把结果列出来并可 **导出 CSV**（账号,密码），刷新页面就再也拿不到明文；
-- **工程管理**：列出所有账号的工程与会话数、给任意账号新建工程。
+- **账户**：概览（账号数 / 启用数 / 管理员数 / 已记录上传数）、新建账号、批量创号、账号列表
+  （多一列「来源」，区分 本地 / LDAP / SSO）；
+- **LDAP 设置**：服务器地址、Base DN、两种绑定方式（DN 模板 / AD 过滤器）、服务账号、
+  管理员组、StartTLS、超时、登录页显示名，带「保存 / 测试连接 / 恢复环境变量」；
+- **SSO 设置**：issuer、client id/secret、scopes、回调地址、管理员组、账号名/组字段、
+  显示名、secret 传递方式（post / basic），带「保存 / 测试 discovery / 恢复环境变量」；
+- **工程管理**：工程表（详情 / 改名 / 删除、批量建同名工程）+ **文件资源管理器** +
+  **上传流水（谁上传了什么）**。
+
+文件资源管理器按 `data/ → 账号 → 工程 → 会话 → 文件` 逐层点进去，每层给出大小、条目数 /
+图片数、修改时间；到文件层会显示**最后一个动这个文件的人**（上传 / 保存标注 / 删除），
+也可以预览、下载、单个删除。只在管理员身份下可用，路径一律限制在 `data/` 内，越界直接 400。
+
+「上传流水」按人汇总上传数量与累计体积，并列出最近 200 条动作。这些记录写在同一个 SQLite 的
+`file_events` 表里（`actor / event / owner / project / session / name / size / at`），
+所以备份数据库时痕迹一起走；记录失败不会影响上传或保存本身。
 
 批量创号每个账号要算一次 bcrypt（cost 12，约 0.3 秒/个），200 个大约一分钟，
 按钮会一直置灰到请求返回；超时上限受 NGINX `proxy_read_timeout` 约束，别一次拉太满。
@@ -166,10 +172,13 @@ data/20260101013030/114.json    ← 该图的标注
 
 标注页只多了一个「文件 → 退出登录」和状态栏右下角的当前账号名，没有管理相关按钮。
 
-## LDAP / AD 接入（可选，纯环境变量）
+## LDAP / AD 接入（可选）
 
 不配就是现在这套本地账号，一行代码都不会走到 LDAP；配上之后，**本地密码仍然优先**，
 本地过不了才去 LDAP 验证 —— 这样 LDAP 挂了管理员还能从本地账号进来救场。
+
+配置有两处来源：**后台页面 /admin → LDAP 设置（存在 SQLite，优先）**，以及下面的环境变量（兜底）。
+页面里点「恢复环境变量」会清掉页面保存的值，回退成纯环境变量模式。
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
@@ -216,6 +225,50 @@ LABELME_WEB_LDAP_ADMIN_GROUP=CN=labelme-admins,OU=groups,DC=lab,DC=local
 
 ```bash
 python dev/ldap_mock_check.py     # 13 项：模板/搜索绑定、密码错、组映射、影子账号、幂等
+```
+
+## SSO 接入（OIDC，可选）
+
+通用 OpenID Connect，不绑定某一家 IdP：Authentik / Keycloak / Microsoft Entra / 学校统一认证
+都走同一套 discovery + authorization code + JWKS 验签。同样**页面可配、环境变量兜底**，
+`issuer` + `client_id` 两者都有才算开启。
+
+| 变量 / 页面字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `LABELME_WEB_SSO_ISSUER` | 是 | IdP 的 issuer，如 `https://auth.lab.local/application/o/labelme/` |
+| `LABELME_WEB_SSO_CLIENT_ID` | 是 | 应用 client id |
+| `LABELME_WEB_SSO_CLIENT_SECRET` | 否 | 机密客户端才需要；公开客户端（PKCE）留空 |
+| `LABELME_WEB_SSO_SCOPES` | 否 | 默认 `openid profile email` |
+| `LABELME_WEB_SSO_REDIRECT_URI` | 否 | 空 = 按访问域名拼 `/api/auth/sso/callback`；反代/公网部署建议显式填 |
+| `LABELME_WEB_SSO_ADMIN_GROUP` | 否 | 命中组 → 影子账号设为管理员（只升不降） |
+| `LABELME_WEB_SSO_USERNAME_CLAIM` | 否 | 默认 `preferred_username`，可改 `email` 等 |
+| `LABELME_WEB_SSO_GROUPS_CLAIM` | 否 | 默认 `groups`，没有时自动尝试 `roles` / `realm_access.roles` |
+| `LABELME_WEB_SSO_LABEL` | 否 | 登录页按钮文字，默认「统一登录（SSO）」 |
+| `LABELME_WEB_SSO_TOKEN_AUTH` | 否 | `post`（默认）或 `basic`（Authorization: Basic） |
+
+流程与约定：
+
+1. 登录页出现「用<显示名>登录」按钮 → `GET /api/auth/sso/start` → 302 到 IdP 授权页
+   （带 `state` / `nonce`，内存里存 10 分钟）；
+2. IdP 回调 `GET /api/auth/sso/callback` → 用 code 换 token → 用 JWKS 校验
+   `id_token`（`iss` / `aud` / `exp` / `nonce`）→ 取 claims 里的账号名；
+3. 落一条影子账号（`source='sso'`，`password_hash='!sso'` 占位），之后权限、工程、会话、
+   `/admin` 全部照旧；同名本地账号不覆盖密码，只按组升权限；
+4. 任何失败都 302 回 `/login?sso_error=...`，`SsoUnavailable` 与 `SsoError` 分开给原因
+   （连不上 IdP / 校验不过），不会把用户卡在空白页；
+5. `/api/auth/methods` 只多一个 `sso: {enabled, label}`，不泄露 issuer 与 client id。
+
+自检（本地起一个假 IdP，跑完整链路，不需要真 IdP）：
+
+```bash
+python dev/sso_mock_check.py      # 25 项：discovery 缓存、state 一次性、验签/过期/换 key、
+                                  #       组映射、basic/post、影子账号、methods
+```
+
+管理后台冒烟（隔离库 + 端口 9632，覆盖配置保存/测试、文件浏览器、上传流水）：
+
+```bash
+pwsh dev/admin_smoke.ps1          # 19 项
 ```
 
 
@@ -389,7 +442,17 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 | POST | `/api/auth/login` | 登录，成功后下发 `lmweb_session` cookie |
 | POST | `/api/auth/logout` | 退出登录并删掉服务端 token |
 | GET | `/api/auth/me` | 当前账号 `{user:{id,username,role,enabled}}` |
-| GET | `/api/auth/methods` | 登录方式（`{password:true, ldap:{enabled,label}}`），不泄露 LDAP 地址 |
+| GET | `/api/auth/methods` | 登录方式（`{password:true, ldap:{enabled,label}, sso:{enabled,label}}`），不泄露地址与 client |
+| GET | `/api/auth/sso/start` | 302 到 IdP 授权页；未启用 SSO 时 404 |
+| GET | `/api/auth/sso/callback` | IdP 回调：换 token、验 `id_token`、发本地会话、回 `next`；失败 302 到登录页带 `sso_error` |
+| GET | `/api/admin/auth-config` | LDAP / SSO 当前生效配置（密钥遮罩，带每个值的来源） |
+| PUT | `/api/admin/auth-config` | 保存 LDAP / SSO 配置到数据库（优先于环境变量） |
+| DELETE | `/api/admin/auth-config` | `?kind=ldap|sso` 清掉页面保存的值，回退环境变量 |
+| POST | `/api/admin/auth-config/test` | 连通性测试 `{kind:'ldap'|'sso'}` |
+| GET | `/api/admin/files` | 文件浏览器：`?owner=&project=&session=` 逐层列目录（带大小/时间/上传人） |
+| GET | `/api/admin/files/raw` | 读取 `data/` 下的单个文件 `?path=`，`&download=1` 带附件头；越界 400 |
+| DELETE | `/api/admin/files` | 删除 `data/` 下的单个文件 `?path=` |
+| GET | `/api/admin/uploaders` | 谁上传了什么：按人汇总 + 最近动作流水 `?limit=` |
 | GET | `/api/admin/users` | 账号列表（仅管理员） |
 | POST | `/api/admin/users` | 新建账号 `{username,password,role}` |
 | PATCH | `/api/admin/users/{id}` | 改角色 / 启停 / 重置密码 |
