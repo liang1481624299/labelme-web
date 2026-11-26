@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+
+from backend import settings_store
 
 LDAP_URL_ENV = "LABELME_WEB_LDAP_URL"
 BASE_DN_ENV = "LABELME_WEB_LDAP_BASE_DN"
@@ -54,7 +56,20 @@ class LdapUser:
 
 
 def _env(key: str, default: str = "") -> str:
-    return (os.environ.get(key) or default).strip()
+    """环境变量 → 数据库键的映射；数据库里改过的值优先。"""
+    db_key = {
+        LDAP_URL_ENV: "ldap.url",
+        BASE_DN_ENV: "ldap.base_dn",
+        USER_DN_ENV: "ldap.user_dn",
+        USER_FILTER_ENV: "ldap.user_filter",
+        SERVICE_DN_ENV: "ldap.bind_dn",
+        SERVICE_PW_ENV: "ldap.bind_password",
+        ADMIN_GROUP_ENV: "ldap.admin_group",
+        STARTTLS_ENV: "ldap.starttls",
+        TIMEOUT_ENV: "ldap.timeout",
+        LABEL_ENV: "ldap.label",
+    }.get(key, key)
+    return settings_store.get(db_key, key, default)
 
 
 def enabled() -> bool:
@@ -71,6 +86,29 @@ def public_config() -> dict:
     if not enabled():
         return {"enabled": False, "label": ""}
     return {"enabled": True, "label": label()}
+
+
+def config_view() -> Dict[str, Any]:
+    """管理端展示用：只把密码做遮罩，其余原样给出，并标出每个值的来源。"""
+    return {
+        "enabled": enabled(),
+        "url": _env(LDAP_URL_ENV),
+        "base_dn": _env(BASE_DN_ENV),
+        "user_dn": _env(USER_DN_ENV),
+        "user_filter": _env(USER_FILTER_ENV),
+        "bind_dn": _env(SERVICE_DN_ENV),
+        "bind_password": settings_store.mask(_env(SERVICE_PW_ENV)),
+        "bind_password_set": bool(_env(SERVICE_PW_ENV)),
+        "admin_group": _env(ADMIN_GROUP_ENV),
+        "starttls": _env(STARTTLS_ENV).lower() in {"1", "true", "yes"},
+        "timeout": _env(TIMEOUT_ENV, str(DEFAULT_TIMEOUT)),
+        "label": label(),
+        "source": {
+            "url": settings_store.source_of("ldap.url", LDAP_URL_ENV),
+            "base_dn": settings_store.source_of("ldap.base_dn", BASE_DN_ENV),
+            "user_dn": settings_store.source_of("ldap.user_dn", USER_DN_ENV),
+        },
+    }
 
 
 def escape_filter(value: str) -> str:

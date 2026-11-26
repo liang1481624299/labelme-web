@@ -10,6 +10,7 @@ if (!next.startsWith('/') || next.startsWith('//')) next = '/';
 
 let mode = 'login';
 let ldapHintText = '';
+let ssoEnabled = false;
 
 function setMode(value) {
   mode = value;
@@ -18,6 +19,7 @@ function setMode(value) {
   });
   $('registerHint').hidden = value !== 'register';
   if (value === 'register') $('ldapHint').hidden = true;
+  if (ssoEnabled) $('ssoBox').hidden = value !== 'login';
   if (value === 'login' && ldapHintText) {
     $('ldapHint').textContent = ldapHintText;
     $('ldapHint').hidden = false;
@@ -77,6 +79,11 @@ if (next === '/admin') {
 setMode('login');
 $('username').focus();
 
+/* 从 SSO 回调失败回来时，后端会把原因塞在 sso_error 里 */
+if (params.get('sso_error')) {
+  showError(params.get('sso_error'));
+}
+
 /* 后端如果开了 LDAP 接入层，就在登录框下面写一句提示；
    只拿开关和显示名，拿不到服务器地址（那是运维配置，不该出现在页面上）。 */
 (async () => {
@@ -85,6 +92,16 @@ $('username').focus();
     if (!res.ok) return;
     const data = await res.json();
     const ldap = (data && data.ldap) || {};
+    const sso = (data && data.sso) || {};
+    if (sso.enabled) {
+      ssoEnabled = true;
+      const btn = $('ssoBtn');
+      btn.textContent = `用${sso.label || '统一登录'}登录`;
+      $('ssoBox').hidden = mode !== 'login';
+      btn.addEventListener('click', () => {
+        location.href = '/api/auth/sso/start?next=' + encodeURIComponent(next);
+      });
+    }
     if (!ldap.enabled) return;
     ldapHintText = `可以直接用${ldap.label || 'LDAP'}账号登录；如果没有，仍可用本站账号密码登录。`;
     if (mode === 'login') {

@@ -24,12 +24,13 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 
-from backend import ldap_auth
+from backend import ldap_auth, settings_store, sso_auth
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("LABELME_WEB_DB") or (BASE_DIR / "var" / "labelme-web.db"))
@@ -177,33 +178,41 @@ def find_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
         return conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
 
 
-# ------------------------------------------------------------------ ldap shadow users
-def ldap_shadow_user(lu: "ldap_auth.LdapUser") -> sqlite3.Row:
-    """LDAP 认证通过后落一条本地影子账号：权限、工程、会话全都复用原有逻辑。
+# ------------------------------------------------------------------ external shadow users
+def external_user(username: str, external_id: str, source: str, is_admin: bool) -> sqlite3.Row:
+    """外部身份（LDAP / SSO）认证通过后落一条本地影子账号。
 
     * 账号名必须符合本站命名规则（它同时是 data/ 下的目录名）
     * 已存在的同名本地账号不覆盖密码，只按组映射补管理员权限（不降级，避免误锁）
     """
-    if not USERNAME_RE.match(lu.username or ""):
-        raise HTTPException(status_code=403, detail="该 LDAP 账号名不符合本站命名规则（2–32 位，中英文/数字/_ - .）")
+    if not USERNAME_RE.match(username or ""):
+        raise HTTPException(status_code=403, detail="该外部账号名不符合本站命名规则（2–32 位，中英文/数字/_ - .）")
     with _LOCK:
-        row = find_user(lu.username)
+        row = find_user(username)
         if row is None:
-            role = "admin" if (lu.is_admin or count_users() == 0) else "annotator"
+            role = "admin" if (is_admin or count_users() == 0) else "annotator"
             with connect() as conn:
                 cur = conn.execute(
                     "INSERT INTO users(username, password_hash, role, enabled, created_at, last_login_at, source, external_id) "
                     "VALUES(?,?,?,1,?,?,?,?)",
-                    (lu.username, ldap_auth.SHADOW_HASH, role, now_iso(), now_iso(), "ldap", lu.dn),
+                    (username, "!" + source, role, now_iso(), now_iso(), source, external_id),
                 )
                 conn.commit()
             return find_user_by_id(cur.lastrowid)
-        if lu.is_admin and row["role"] != "admin":
+        if is_admin and row["role"] != "admin":
             with connect() as conn:
                 conn.execute("UPDATE users SET role='admin' WHERE id=?", (row["id"],))
                 conn.commit()
             row = find_user_by_id(row["id"])
         return row
+
+
+def ldap_shadow_user(lu: "ldap_auth.LdapUser") -> sqlite3.Row:
+    return external_user(lu.username, lu.dn, "ldap", lu.is_admin)
+
+
+def sso_shadow_user(su: "sso_auth.SsoUser") -> sqlite3.Row:
+    return external_user(su.username, su.sub, "sso", su.is_admin)
 
 
 # ------------------------------------------------------------------ token / cookie
@@ -294,7 +303,14 @@ def require_admin(user: Dict[str, Any] = None) -> Dict[str, Any]:
 async def auth_guard(request: Request, call_next):
     """最外层兜底：除了登录/注册/健康检查，/api/* 一律要求登录。"""
     path = request.url.path
-    public = path in {"/api/health", "/api/auth/login", "/api/auth/register", "/api/auth/methods"}
+    public = path in {
+        "/api/health",
+        "/api/auth/login",
+        "/api/auth/register",
+        "/api/auth/methods",
+        "/api/auth/sso/start",
+        "/api/auth/sso/callback",
+    }
     if path.startswith("/api/") and not public:
         if user_from_request(request) is None:
             return JSONResponse({"detail": "请先登录"}, status_code=401)
@@ -423,8 +439,63 @@ def login(request: Request, payload: Dict[str, Any]) -> JSONResponse:
 
 @router.get("/methods")
 def auth_methods() -> Dict[str, Any]:
-    """登录页用：告诉前端要不要显示「LDAP / 域账号」的提示，不泄露服务器地址。"""
-    return {"password": True, "ldap": ldap_auth.public_config()}
+    """登录页用：告诉前端有哪几种登录方式，不泄露任何服务器地址或密钥。"""
+    return {
+        "password": True,
+        "ldap": ldap_auth.public_config(),
+        "sso": sso_auth.public_config(),
+    }
+
+
+def _origin(request: Request) -> str:
+    """反代后的真实 origin：优先 X-Forwarded-*，没有再退回请求本身。"""
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip() or request.url.scheme
+    host = request.headers.get("x-forwarded-host", "").split(",")[0].strip() or request.headers.get("host") or request.url.netloc
+    return f"{proto}://{host}"
+
+
+def _safe_next(value: Optional[str]) -> str:
+    if not value or not value.startswith("/") or value.startswith("//"):
+        return "/"
+    return value
+
+
+@router.get("/sso/start")
+def sso_start(request: Request, next: Optional[str] = None) -> Response:
+    """跳去 IdP 授权页。没启用 SSO 就当 404，不给探测面。"""
+    if not sso_auth.enabled():
+        raise HTTPException(status_code=404, detail="未启用 SSO")
+    try:
+        url = sso_auth.begin(_origin(request), _safe_next(next))
+    except sso_auth.SsoUnavailable as exc:
+        return RedirectResponse("/login?sso_error=" + quote(str(exc)), status_code=302)
+    except sso_auth.SsoError as exc:
+        return RedirectResponse("/login?sso_error=" + quote(str(exc)), status_code=302)
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/sso/callback")
+def sso_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None) -> Response:
+    """IdP 回调：校验 token → 建/取影子账号 → 发本地会话 cookie → 回原页面。"""
+    if not sso_auth.enabled():
+        raise HTTPException(status_code=404, detail="未启用 SSO")
+    try:
+        user, stored = sso_auth.finish(code or "", state or "")
+    except (sso_auth.SsoUnavailable, sso_auth.SsoError) as exc:
+        return RedirectResponse("/login?sso_error=" + quote(str(exc)), status_code=302)
+    try:
+        row = sso_shadow_user(user)
+    except HTTPException as exc:
+        return RedirectResponse("/login?sso_error=" + quote(str(exc.detail)), status_code=302)
+    if not row["enabled"]:
+        return RedirectResponse("/login?sso_error=" + quote("该账号已被禁用，请联系管理员"), status_code=302)
+    with connect() as conn:
+        conn.execute("UPDATE users SET last_login_at=? WHERE id=?", (now_iso(), row["id"]))
+        conn.commit()
+    token = issue_session(row["id"])
+    response = RedirectResponse(_safe_next(stored.get("next")), status_code=302)
+    set_login_cookie(response, request, token)
+    return response
 
 
 @router.post("/logout")
@@ -640,6 +711,95 @@ def admin_overview(admin: Dict[str, Any] = Depends(admin_guard)) -> Dict[str, An
         enabled = conn.execute("SELECT COUNT(*) AS n FROM users WHERE enabled=1").fetchone()["n"]
         admins = conn.execute("SELECT COUNT(*) AS n FROM users WHERE role='admin'").fetchone()["n"]
     return {"users": total, "enabled": enabled, "admins": admins}
+
+
+# ------------------------------------------------------------------ auth config (LDAP / SSO)
+LDAP_FIELD_MAP = {
+    "url": ("ldap.url", ldap_auth.LDAP_URL_ENV),
+    "base_dn": ("ldap.base_dn", ldap_auth.BASE_DN_ENV),
+    "user_dn": ("ldap.user_dn", ldap_auth.USER_DN_ENV),
+    "user_filter": ("ldap.user_filter", ldap_auth.USER_FILTER_ENV),
+    "bind_dn": ("ldap.bind_dn", ldap_auth.SERVICE_DN_ENV),
+    "bind_password": ("ldap.bind_password", ldap_auth.SERVICE_PW_ENV),
+    "admin_group": ("ldap.admin_group", ldap_auth.ADMIN_GROUP_ENV),
+    "starttls": ("ldap.starttls", ldap_auth.STARTTLS_ENV),
+    "timeout": ("ldap.timeout", ldap_auth.TIMEOUT_ENV),
+    "label": ("ldap.label", ldap_auth.LABEL_ENV),
+}
+SSO_FIELD_MAP = {
+    "issuer": ("sso.issuer", sso_auth.ISSUER_ENV),
+    "client_id": ("sso.client_id", sso_auth.CLIENT_ID_ENV),
+    "client_secret": ("sso.client_secret", sso_auth.CLIENT_SECRET_ENV),
+    "scopes": ("sso.scopes", sso_auth.SCOPES_ENV),
+    "redirect_uri": ("sso.redirect_uri", sso_auth.REDIRECT_ENV),
+    "admin_group": ("sso.admin_group", sso_auth.ADMIN_GROUP_ENV),
+    "username_claim": ("sso.username_claim", sso_auth.USERNAME_CLAIM_ENV),
+    "groups_claim": ("sso.groups_claim", sso_auth.GROUPS_CLAIM_ENV),
+    "label": ("sso.label", sso_auth.LABEL_ENV),
+    "token_auth": ("sso.token_auth", sso_auth.TOKEN_AUTH_ENV),
+}
+
+
+@admin_router.get("/auth-config")
+def get_auth_config(admin: Dict[str, Any] = Depends(admin_guard)) -> Dict[str, Any]:
+    """LDAP / SSO 两类设置：当前生效值 + 每个值的来源（页面 / 环境变量）。"""
+    return {"ldap": ldap_auth.config_view(), "sso": sso_auth.config_view()}
+
+
+def _save_section(payload: Dict[str, Any], field_map: Dict[str, tuple]) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    for field, (db_key, _env_name) in field_map.items():
+        if field not in payload:
+            continue
+        value = payload[field]
+        if field in {"bind_password", "client_secret"}:
+            # 空串 = 不修改；前端传回遮罩值也视为"不修改"，避免把 •••• 存进去
+            if not value or str(value).startswith("•"):
+                continue
+            values[db_key] = str(value)
+            continue
+        if isinstance(value, bool):
+            values[db_key] = "1" if value else "0"
+            continue
+        values[db_key] = "" if value is None else str(value).strip()
+    return values
+
+
+@admin_router.put("/auth-config")
+def put_auth_config(payload: Dict[str, Any], admin: Dict[str, Any] = Depends(admin_guard)) -> Dict[str, Any]:
+    """保存 LDAP / SSO 设置到数据库（覆盖环境变量）。只传一个 section 也行。"""
+    saved: Dict[str, str] = {}
+    if isinstance(payload.get("ldap"), dict):
+        saved.update(_save_section(payload["ldap"], LDAP_FIELD_MAP))
+    if isinstance(payload.get("sso"), dict):
+        saved.update(_save_section(payload["sso"], SSO_FIELD_MAP))
+    if saved:
+        settings_store.set_many(saved)
+    sso_auth._DISCOVERY.clear()  # 改了 issuer 之后别再用旧缓存
+    return {"saved": sorted(saved.keys()), "ldap": ldap_auth.config_view(), "sso": sso_auth.config_view()}
+
+
+@admin_router.post("/auth-config/test")
+def test_auth_config(payload: Dict[str, Any], admin: Dict[str, Any] = Depends(admin_guard)) -> Dict[str, Any]:
+    kind = str(payload.get("kind") or "").lower()
+    if kind == "ldap":
+        return {"kind": "ldap", **ldap_auth.health()}
+    if kind == "sso":
+        return {"kind": "sso", **sso_auth.probe()}
+    raise HTTPException(status_code=400, detail="kind 只能是 ldap 或 sso")
+
+
+@admin_router.delete("/auth-config")
+def clear_auth_config(kind: Optional[str] = None, admin: Dict[str, Any] = Depends(admin_guard)) -> Dict[str, Any]:
+    """清掉页面里存的值，回退到环境变量（相当于"撤销页面配置"）。"""
+    keys = []
+    if kind in (None, "", "ldap"):
+        keys += [v[0] for v in LDAP_FIELD_MAP.values()]
+    if kind in (None, "", "sso"):
+        keys += [v[0] for v in SSO_FIELD_MAP.values()]
+    settings_store.delete(keys)
+    sso_auth._DISCOVERY.clear()
+    return {"cleared": len(keys), "ldap": ldap_auth.config_view(), "sso": sso_auth.config_view()}
 
 
 # ------------------------------------------------------------------ pages
