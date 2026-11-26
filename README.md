@@ -316,9 +316,16 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 - 文件：上传图像、多图列表、上一张/下一张、自动保存（停手 0.8 s 落盘）、手动保存、另存为 JSON、关闭图像（可保留上一张标注与缩放）、删除标注文件、删除图像
 - 快捷键：Ctrl+O/U/S/Shift+S/W、Delete/Ctrl+Delete、A/D 切图、Ctrl+N 多边形、Ctrl+R 矩形、Ctrl+E 改标签、Ctrl+Shift+L 锁定、T 切换显示、Ctrl+F/Ctrl+Shift+F 适合窗口/选中、Ctrl+0 原始大小、Ctrl+↑/↓/←/→ 选邻近形状
 - 快捷键：Ctrl+O / Ctrl+S / Ctrl+Z / Ctrl+Y / Ctrl+D / Ctrl+N / Ctrl+R / Delete / A、D / Enter / Esc
+- 掩码（`mask`）：渲染二值 PNG、`rectangle/circle/polygon/oriented_rectangle` → `mask` 栅格化、`mask` → 多边形（轮廓追踪）/ 矩形
+- 多选与合并：Shift + 点选多个形状，转换菜单「合并所选形状」= 并集栅格化成单个 mask（与桌面版一致）
+- 工程级配置：label 对话框带 Group ID、描述、flags 勾选；图像级 image flags；`GET/PUT /api/flags` 存到工程 `flags.txt`
+- 保存选项：自动保存开关、撤销步数（默认 20）、把图像 base64 内嵌到 JSON（`imageData`）、切换图像时保留亮度/对比度
+- 标签集：菜单「导出 / 导入标签集（labels.txt）」
+- 视图：十字准星开关、允许点在图像外（`allow_out_of_bounds_points`）、显示/隐藏侧边面板、重置面板布局
 
 **未对标**：`AI-Segment`、`AI-Find All`、SAM 模型下拉。这几项依赖服务端 SAM 权重与 GPU，
 纯 Web 源码部署没有模型可用，界面上保留入口但置灰，鼠标悬停会说明。普通标注流程不受影响。
+另：`epsilon`（多边形简化阈值）目前固定 0.01，界面上没放滑块；如有需要可加。
 
 ## HTTP API
 
@@ -339,6 +346,9 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 | POST | `/api/admin/users/batch` | 批量创号 `{count,start?}`，账号名与初始密码都是 8 位数字 ID（仅管理员） |
 | GET | `/api/projects` | 当前账号的工程列表；`?owner=` 指定账号，管理员可用 `?scope=all` 看全部 |
 | POST | `/api/projects` | 新建工程 `{name,owner?}`（普通账号只能建自己的） |
+| PUT | `/api/projects` | 工程改名 `{name,new_name,owner?}`，目录与索引一起改；重名 409 |
+| DELETE | `/api/projects` | 删除工程 `{name,owner?}`（连同会话、图片、标注），返回删掉的会话数 |
+| GET | `/api/projects/detail` | 工程概览 `?owner=&name=`：会话列表、图片/标注数、标签集 |
 | POST | `/api/sessions` | 在 `?owner=&project=` 下新建会话目录，返回 `{session,owner,project}` |
 | GET | `/api/sessions` | 会话列表（**JSON 数组**），支持 `?owner=&project=`（普通账号只能看自己的；管理员不传 owner 看全部） |
 | POST | `/api/sessions/{s}/images` | 上传图像，multipart 字段名 `files`，可多文件，重名自动加 `-1` |
@@ -354,5 +364,7 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 | GET | `/api/recent` | 最近一次动过的会话/图像，供强杀、蓝屏后接回；支持 `?owner=` |
 | GET | `/api/labels` | 读**工程级**标签集（`data/<owner>/<project>/labels.txt`），支持 `?owner=&project=` |
 | PUT | `/api/labels` | 写工程标签集，body `{"labels":[...]}`，支持 `?owner=&project=` |
+| GET | `/api/flags` | 读工程级 flag 定义（`data/<owner>/<project>/flags.txt`），支持 `?owner=&project=` |
+| PUT | `/api/flags` | 写工程 flag 定义，body `{"flags":[...]}`，支持 `?owner=&project=` |
 
 `/api/docs` 有 FastAPI 自带的可交互文档（若不想暴露，可在 NGINX 里单独 `location /api/docs { deny all; }`）。
