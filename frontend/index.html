@@ -93,6 +93,10 @@
         <textarea id="labelDesc" rows="2" placeholder="描述（可留空）"></textarea>
       </div>
       <div class="recent" id="recentLabels"></div>
+      <div class="flags-block">
+        <div class="flags-title">形状标记（flags） <button class="mini" id="btnNewFlag" type="button">+ 新建</button></div>
+        <div class="flags-list" id="labelFlags"></div>
+      </div>
     </div>
     <footer>
       <button class="btn" id="btnLabelCancel">取消</button>
@@ -179,6 +183,27 @@
       <button class="btn btn-primary" data-close>完成</button>
     </footer>
     <input type="file" id="labelsFileInput" accept=".txt,.json,text/plain,application/json" hidden />
+  </div>
+</div>
+
+<div class="modal-backdrop" id="imgFlagsModal" hidden>
+  <div class="modal modal-sm">
+    <header>
+      <span>图像标记（image flags）</span>
+      <button class="x" data-close>&times;</button>
+    </header>
+    <div class="modal-body">
+      <p class="hint">这些 flag 写进 JSON 顶层的 <code>flags</code> 字段，与桌面版一致。</p>
+      <div class="flags-list" id="imgFlagsList"></div>
+      <div class="add-row">
+        <input id="newImgFlagInput" type="text" placeholder="新增 flag" />
+        <button class="btn" id="btnAddImgFlag">添加</button>
+      </div>
+    </div>
+    <footer>
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-primary" id="btnImgFlagsOk">确定</button>
+    </footer>
   </div>
 </div>
 

@@ -78,9 +78,15 @@
         </label>
         <button class="btn btn-primary" id="btnCreateProject" type="submit">新建工程</button>
       </form>
+      <form class="form-row" id="projectBatchForm">
+        <label>批量建同名工程（账号一行一个 / 逗号分隔）
+          <textarea id="projectBatchOwners" rows="2" placeholder="10000001,10000002,10000003" style="min-width:320px"></textarea>
+        </label>
+        <button class="btn" id="btnBatchProjects" type="submit">批量创建</button>
+      </form>
       <table class="table">
         <thead>
-          <tr><th>账号</th><th>工程</th><th>会话数</th><th>创建时间</th></tr>
+          <tr><th>账号</th><th>工程</th><th>会话数</th><th>创建时间</th><th>操作</th></tr>
         </thead>
         <tbody id="projectRows"></tbody>
       </table>

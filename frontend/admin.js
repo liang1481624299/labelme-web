@@ -134,7 +134,7 @@ function renderProjects(projects) {
   const box = $('projectRows');
   box.innerHTML = '';
   if (!projects.length) {
-    box.innerHTML = '<tr><td colspan="4" class="empty-cell">还没有工程</td></tr>';
+    box.innerHTML = '<tr><td colspan="6" class="empty-cell">还没有工程</td></tr>';
     return;
   }
   projects.forEach((p) => {
@@ -147,9 +147,66 @@ function renderProjects(projects) {
     sessionsCell.textContent = String(p.sessions);
     const createdCell = document.createElement('td');
     createdCell.textContent = fmt(p.created_at);
-    row.append(ownerCell, nameCell, sessionsCell, createdCell);
+
+    const actionCell = document.createElement('td');
+    const detailBtn = document.createElement('button');
+    detailBtn.className = 'btn btn-sm';
+    detailBtn.textContent = '详情';
+    detailBtn.addEventListener('click', () => showProjectDetail(p.owner, p.name));
+
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'btn btn-sm';
+    renameBtn.textContent = '改名';
+    renameBtn.style.marginLeft = '6px';
+    renameBtn.addEventListener('click', async () => {
+      const next = prompt(`把「${p.name}」改成：`, p.name);
+      if (!next || next === p.name) return;
+      try {
+        await api('PUT', '/api/projects', { owner: p.owner, name: p.name, new_name: next.trim() });
+        msg($('projectMsg'), `已改名为「${next.trim()}」`, true);
+        await loadProjects();
+      } catch (err) {
+        msg($('projectMsg'), err.message, false);
+      }
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn btn-sm btn-danger';
+    delBtn.textContent = '删除';
+    delBtn.style.marginLeft = '6px';
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`确认删除 ${p.owner} 的工程「${p.name}」？\n其中 ${p.sessions} 个会话的图片和标注会一起删掉，不可恢复。`)) return;
+      try {
+        const res = await api('DELETE', '/api/projects', { owner: p.owner, name: p.name });
+        msg($('projectMsg'), `已删除「${p.name}」，清掉 ${res.sessions} 个会话`, true);
+        await loadProjects();
+      } catch (err) {
+        msg($('projectMsg'), err.message, false);
+      }
+    });
+    actionCell.append(detailBtn, renameBtn, delBtn);
+
+    row.append(ownerCell, nameCell, sessionsCell, createdCell, actionCell);
     box.appendChild(row);
   });
+}
+
+async function showProjectDetail(owner, name) {
+  try {
+    const d = await api('GET', `/api/projects/detail?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(name)}`);
+    const lines = [];
+    lines.push(`${d.owner} / ${d.name}`);
+    lines.push(`会话 ${d.session_count} 个 · 图片 ${d.images} 张 · 已标注 ${d.annotations} 张`);
+    if (d.labels.length) lines.push(`标签集：${d.labels.join('、')}`);
+    lines.push('');
+    d.sessions.slice(0, 30).forEach((s) => {
+      lines.push(`${s.session}  图片 ${s.images} / 标注 ${s.annotations}`);
+    });
+    if (d.sessions.length > 30) lines.push(`…… 其余 ${d.sessions.length - 30} 个会话省略`);
+    alert(lines.join('\n'));
+  } catch (err) {
+    msg($('projectMsg'), err.message, false);
+  }
 }
 
 async function loadProjects() {
@@ -280,6 +337,40 @@ $('projectForm').addEventListener('submit', async (event) => {
   } catch (err) {
     msg($('projectMsg'), err.message, false);
   }
+});
+
+$('projectBatchForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const owners = $('projectBatchOwners').value
+    .split(/[\s,，、;；]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const name = $('projectName').value.trim();
+  if (!owners.length) {
+    msg($('projectMsg'), '请先填账号列表', false);
+    return;
+  }
+  if (!name) {
+    msg($('projectMsg'), '请在上面的「工程名」里填一个名字', false);
+    return;
+  }
+  const btn = $('btnBatchProjects');
+  btn.disabled = true;
+  let ok = 0;
+  const failed = [];
+  for (const owner of owners) {
+    try {
+      await api('POST', '/api/projects', { owner, name });
+      ok += 1;
+    } catch (err) {
+      failed.push(`${owner}：${err.message}`);
+    }
+  }
+  btn.disabled = false;
+  msg($('projectMsg'),
+    `已为 ${ok} 个账号建好「${name}」` + (failed.length ? `；失败 ${failed.length} 个：${failed.slice(0, 3).join('；')}` : ''),
+    !failed.length);
+  await loadProjects();
 });
 
 $('btnBack').addEventListener('click', () => location.assign('/'));

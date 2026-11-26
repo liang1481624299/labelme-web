@@ -74,6 +74,13 @@ def now_iso() -> str:
     return datetime.now().isoformat(" ", timespec="seconds")
 
 
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def ensure_data_dir() -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     return DATA_DIR
@@ -137,6 +144,93 @@ def list_projects(owner: Optional[str] = None) -> List[Dict[str, Any]]:
 
 def project_exists(owner: str, project: str) -> bool:
     return project_dir(owner, project).is_dir()
+
+
+def rename_project(owner: str, old_name: str, new_name: str) -> str:
+    """改工程名：搬目录 + 同步 projects / session_index 两张表。返回新名字。"""
+    owner = safe_component(owner, "用户名")
+    old_name = safe_component(old_name, "工程名")
+    new_name = safe_component(new_name, "工程名")
+    if old_name == DEFAULT_PROJECT and new_name == DEFAULT_PROJECT:
+        return new_name
+    src = project_dir(owner, old_name)
+    dst = project_dir(owner, new_name)
+    if not src.is_dir():
+        raise FileNotFoundError("工程不存在")
+    if dst.exists():
+        raise FileExistsError("新工程名已被占用")
+    with _LOCK:
+        src.rename(dst)
+        with _conn() as conn:
+            conn.execute(
+                "UPDATE projects SET name=? WHERE owner=? AND name=?", (new_name, owner, old_name)
+            )
+            conn.execute(
+                "UPDATE session_index SET project=? WHERE owner=? AND project=?",
+                (new_name, owner, old_name),
+            )
+            conn.commit()
+    return new_name
+
+
+def delete_project(owner: str, name: str) -> int:
+    """删工程：整目录删掉（含所有会话和标注），返回删掉的会话数。"""
+    owner = safe_component(owner, "用户名")
+    name = safe_component(name, "工程名")
+    path = project_dir(owner, name)
+    if not path.is_dir():
+        raise FileNotFoundError("工程不存在")
+    with _LOCK:
+        with _conn() as conn:
+            sessions = conn.execute(
+                "SELECT id FROM session_index WHERE owner=? AND project=?", (owner, name)
+            ).fetchall()
+            conn.execute("DELETE FROM session_index WHERE owner=? AND project=?", (owner, name))
+            conn.execute("DELETE FROM projects WHERE owner=? AND name=?", (owner, name))
+            conn.commit()
+        shutil.rmtree(path, ignore_errors=True)
+    return len(sessions)
+
+
+def project_detail(owner: str, name: str) -> Dict[str, Any]:
+    """工程概览：会话数、图片数、已标注数、最后活动时间。"""
+    owner = safe_component(owner, "用户名")
+    name = safe_component(name, "工程名")
+    root = project_dir(owner, name)
+    if not root.is_dir():
+        raise FileNotFoundError("工程不存在")
+    sessions: List[Dict[str, Any]] = []
+    images = annotated = 0
+    last_mtime = 0.0
+    for folder in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
+        imgs = image_files(folder)
+        jsons = list(folder.glob("*.json"))
+        images += len(imgs)
+        annotated += len(jsons)
+        mt = _mtime(folder)
+        last_mtime = max(last_mtime, mt)
+        sessions.append(
+            {
+                "session": folder.name,
+                "images": len(imgs),
+                "annotations": len(jsons),
+                "mtime": mt,
+            }
+        )
+    labels: List[str] = []
+    lp = root / "labels.txt"
+    if lp.is_file():
+        labels = [ln.strip() for ln in lp.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    return {
+        "owner": owner,
+        "name": name,
+        "sessions": sessions,
+        "session_count": len(sessions),
+        "images": images,
+        "annotations": annotated,
+        "labels": labels,
+        "mtime": last_mtime,
+    }
 
 
 # ------------------------------------------------------------------ 会话索引
@@ -257,6 +351,10 @@ def image_files(folder: Path) -> List[Path]:
 
 def labels_path(owner: str, project: str) -> Path:
     return project_dir(owner, project, create=True) / "labels.txt"
+
+
+def flags_path(owner: str, project: str) -> Path:
+    return project_dir(owner, project, create=True) / "flags.txt"
 
 
 def session_max_mtime(owner: str, project: str, sid: str) -> Tuple[float, Optional[str], Optional[str]]:

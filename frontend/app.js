@@ -96,16 +96,24 @@ const state = {
   image: null,          // {name,w,h,img,canvas}
   shapes: [],
   selected: -1,
+  selectedSet: [],       // 多选：所有被选中的下标（单选的超集）
   selectedVertex: -1,
   tool: 'select',
   labels: [],
+  flagDefs: [],
   flags: {},
+  autoSave: true,
+  embedImage: false,     // 是否把图像 base64 写进 JSON（桌面版 "Store image data"）
+  crosshair: true,       // 十字准星
+  allowOob: false,       // 允许画到图像外（桌面版 allow_out_of_bounds_points）
+  undoLimit: 20,
   hideShapes: false,
   fillDrawing: true,
   clipboard: null,
   hover: null,
   keepPrev: false,
   keepZoom: false,
+  keepBc: false,
   brightness: 0,
   contrast: 0,
   zoom: 1,
@@ -232,9 +240,24 @@ function redraw() {
   ctx.strokeRect(view.tx - 0.5, view.ty - 0.5, iw + 1, ih + 1);
 
   if (!state.hideShapes) {
-    state.shapes.forEach((shape, i) => drawShape(shape, i, i === state.selected));
+    state.shapes.forEach((shape, i) => drawShape(shape, i, i === state.selected || state.selectedSet.includes(i)));
   }
   drawPending();
+
+  if (state.crosshair !== false && state.hover) {
+    const p = imgToScreen(state.hover);
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = 'rgba(220, 240, 255, .55)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(view.tx, p[1]);
+    ctx.lineTo(view.tx + iw, p[1]);
+    ctx.moveTo(p[0], view.ty);
+    ctx.lineTo(p[0], view.ty + ih);
+    ctx.stroke();
+    ctx.restore();
+  }
 
   if (state.drag && state.drag.mode === 'move') {
     // nothing extra, shape already redrawn at new position
@@ -292,6 +315,8 @@ function drawShape(shape, index, selected) {
       ctx.lineWidth = lw;
       ctx.stroke();
     }
+  } else if (shape.shape_type === 'mask') {
+    drawMaskShape(shape, selected, lw);
   } else {
     // polygon / oriented_rectangle / line / linestrip
     ctx.beginPath();
@@ -439,6 +464,13 @@ function shapeHit(shape, pt) {
     const y2 = Math.max(pts[0][1], pts[1][1]);
     return pt[0] >= x1 - tol && pt[0] <= x2 + tol && pt[1] >= y1 - tol && pt[1] <= y2 + tol;
   }
+  if (shape.shape_type === 'mask' && pts.length >= 2) {
+    const x1 = Math.min(pts[0][0], pts[1][0]);
+    const x2 = Math.max(pts[0][0], pts[1][0]);
+    const y1 = Math.min(pts[0][1], pts[1][1]);
+    const y2 = Math.max(pts[0][1], pts[1][1]);
+    return pt[0] >= x1 - tol && pt[0] <= x2 + tol && pt[1] >= y1 - tol && pt[1] <= y2 + tol;
+  }
   if (shape.shape_type === 'line' || shape.shape_type === 'linestrip') {
     for (let i = 0; i < pts.length - 1; i++) {
       if (distToSegment(pt, pts[i], pts[i + 1]) <= tol) return true;
@@ -486,7 +518,7 @@ function snapshot() {
 
 function recordChange(before) {
   state.undo.push(before);
-  if (state.undo.length > 150) state.undo.shift();
+  while (state.undo.length > (state.undoLimit || 20)) state.undo.shift();
   state.redo.length = 0;
   state.dirty = true;
   scheduleDraft();
@@ -511,6 +543,7 @@ function undo() {
   state.redo.push(snapshot());
   state.shapes = JSON.parse(state.undo.pop());
   state.selected = -1;
+  state.selectedSet = [];
   state.selectedVertex = -1;
   state.dirty = true;
   scheduleDraft();
@@ -528,6 +561,7 @@ function redo() {
   state.undo.push(snapshot());
   state.shapes = JSON.parse(state.redo.pop());
   state.selected = -1;
+  state.selectedSet = [];
   state.selectedVertex = -1;
   state.dirty = true;
   scheduleDraft();
@@ -551,12 +585,20 @@ function cleanShape(shape) {
 }
 
 function buildAnnotation() {
+  let imageData = null;
+  if (state.embedImage && state.image && state.image.canvas) {
+    try {
+      imageData = state.image.canvas.toDataURL('image/png').split(',')[1];
+    } catch (e) {
+      imageData = null;
+    }
+  }
   return {
     version: VERSION,
     flags: state.flags || {},
     shapes: state.shapes.map(cleanShape),
     imagePath: state.image ? state.image.name : '',
-    imageData: null,
+    imageData,
     imageHeight: state.image ? state.image.h : 0,
     imageWidth: state.image ? state.image.w : 0,
   };
@@ -564,6 +606,7 @@ function buildAnnotation() {
 
 function scheduleSave() {
   if (!state.sessionId || !state.image) return;
+  if (!state.autoSave) return;
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(() => saveNow(true), 800);
 }
@@ -688,7 +731,7 @@ function finishDrawing() {
       group_id: meta && meta.group_id != null ? meta.group_id : null,
       description: (meta && meta.description) || '',
       shape_type: storedType,
-      flags: {},
+      flags: (meta && meta.flags) || {},
       mask: null,
     };
     commit(() => {
@@ -738,6 +781,7 @@ function addLabel(label) {
 }
 
 let labelsTimer = null;
+let flagTimer = null;
 
 /** 标签集是工程级的，存服务端 data/<用户名>/<工程>/labels.txt（每行一个）。 */
 function saveLabels() {
@@ -770,7 +814,39 @@ async function loadLabels() {
     const res = await req('GET', '/api/labels' + projectQuery());
     if (res && Array.isArray(res.labels)) state.labels = res.labels;
   } catch (e) { /* 后端没起来时继续用缓存 */ }
+  await loadFlagDefs();
   refreshLabelList();
+}
+
+/** 工程级 flag 定义，存服务端 data/<用户名>/<工程>/flags.txt（每行一个）。 */
+async function loadFlagDefs() {
+  try {
+    const res = await req('GET', '/api/flags' + projectQuery());
+    if (res && Array.isArray(res.flags)) state.flagDefs = res.flags;
+  } catch (e) { /* 忽略 */ }
+  mergeUsedFlags();
+}
+
+function mergeUsedFlags() {
+  const extra = new Set();
+  state.shapes.forEach((s) => {
+    Object.keys(s.flags || {}).forEach((f) => extra.add(f));
+  });
+  Object.keys(state.flags || {}).forEach((f) => extra.add(f));
+  extra.forEach((f) => {
+    if (!state.flagDefs.includes(f)) state.flagDefs.push(f);
+  });
+}
+
+function saveFlagDefs() {
+  clearTimeout(flagTimer);
+  flagTimer = setTimeout(async () => {
+    try {
+      await req('PUT', '/api/flags' + projectQuery(), { flags: state.flagDefs });
+    } catch (e) {
+      toast(`flag 定义保存失败：${e.message}`, true);
+    }
+  }, 400);
 }
 
 /** 解析导入的标签文件：.txt 每行一个；.json 支持 ["a","b"] 或 {"labels":[...]} */
@@ -864,6 +940,11 @@ canvas.addEventListener('pointerdown', (ev) => {
 
   const pt = clientToImage(ev.clientX, ev.clientY);
   const tool = state.tool;
+  if (!state.allowOob && state.image) {
+    // 桌面版默认不允许越界点：落到图上之前先裁到图像范围
+    pt.x = Math.min(state.image.w, Math.max(0, pt.x));
+    pt.y = Math.min(state.image.h, Math.max(0, pt.y));
+  }
 
   if (isDrawingTool()) {
     // 双击结束：第二次 pointerdown 不再补点，直接用已有点位闭合
@@ -900,7 +981,22 @@ canvas.addEventListener('pointerdown', (ev) => {
 
   const hit = hitTestShape(pt);
   if (hit >= 0) {
+    if (ev.shiftKey) {
+      // 多选：Shift + 点选，切换该形状的选中状态
+      const set = state.selectedSet.slice();
+      const at = set.indexOf(hit);
+      if (at >= 0) set.splice(at, 1);
+      else set.push(hit);
+      state.selectedSet = set;
+      state.selected = hit;
+      state.selectedVertex = -1;
+      refreshDocks();
+      updateStatus();
+      redraw();
+      return;
+    }
     state.selected = hit;
+    state.selectedSet = [hit];
     state.selectedVertex = -1;
     state.drag = {
       mode: 'move',
@@ -916,6 +1012,7 @@ canvas.addEventListener('pointerdown', (ev) => {
   }
 
   state.selected = -1;
+  state.selectedSet = [];
   state.selectedVertex = -1;
   refreshDocks();
   updateStatus();
@@ -1328,6 +1425,40 @@ function convertSelectedShape(target) {
     toast('形状已经是该类型');
     return;
   }
+  if (target === 'mask') {
+    const raster = rasterizeShapeToMask(shape);
+    commit(() => {
+      shape.shape_type = 'mask';
+      shape.points = raster.points;
+      shape.mask = raster.mask;
+      state.selectedVertex = -1;
+    });
+    toast('已转换为掩码');
+    return;
+  }
+  if (from === 'mask' && target === 'rectangle') {
+    commit(() => {
+      shape.shape_type = 'rectangle';
+      shape.points = boundingBoxOf(shape);
+      shape.mask = null;
+    });
+    toast('已转换为矩形（掩码外接框）');
+    return;
+  }
+  if (from === 'mask' && target === 'polygon') {
+    const pts = maskToPolygonPoints(shape);
+    if (!pts) {
+      toast('掩码还没解码完成，稍后再试一次', true);
+      return;
+    }
+    commit(() => {
+      shape.shape_type = 'polygon';
+      shape.points = pts;
+      shape.mask = null;
+    });
+    toast(`已转换为多边形（${pts.length} 个点）`);
+    return;
+  }
   let points = null;
   if (target === 'polygon') {
     if (from === 'rectangle') {
@@ -1369,6 +1500,260 @@ function convertSelectedShape(target) {
     state.selectedVertex = -1;
   });
   toast(`已转换为 ${target}`);
+}
+
+/* ------------------------------------------------------------------ masks
+   labelme 的 mask 形状：points 是 [[xmin,ymin],[xmax,ymax]] 外接框，
+   mask 是这块区域二值图的 base64 PNG（像素值 0/1）。 */
+const maskImageCache = new Map();
+
+function buildMaskCanvas(maskStr, color) {
+  const key = `${maskStr}|${color[0]},${color[1]},${color[2]}`;
+  const hit = maskImageCache.get(key);
+  if (hit) return hit;
+  const entry = { ready: false, canvas: null };
+  maskImageCache.set(key, entry);
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const data = g.getImageData(0, 0, c.width, c.height);
+    const px = data.data;
+    for (let i = 0; i < px.length; i += 4) {
+      const on = px[i] > 0 || px[i + 1] > 0 || px[i + 2] > 0 || px[i + 3] > 0;
+      px[i] = color[0];
+      px[i + 1] = color[1];
+      px[i + 2] = color[2];
+      px[i + 3] = on ? 255 : 0;
+    }
+    g.putImageData(data, 0, 0);
+    entry.canvas = c;
+    entry.ready = true;
+    redraw();
+  };
+  img.src = `data:image/png;base64,${maskStr}`;
+  return entry;
+}
+
+function drawMaskShape(shape, selected, lw) {
+  const [a, b] = shape.points;
+  if (!a || !b) return;
+  const x0 = Math.min(a[0], b[0]);
+  const y0 = Math.min(a[1], b[1]);
+  const w = Math.abs(b[0] - a[0]);
+  const h = Math.abs(b[1] - a[1]);
+  const col = colorForLabel(shape.label);
+  const entry = buildMaskCanvas(shape.mask, col);
+  const s = imgToScreen([x0, y0]);
+  const sw = w * view.zoom;
+  const sh = h * view.zoom;
+  if (entry.ready && entry.canvas) {
+    ctx.globalAlpha = selected ? 0.75 : 0.55;
+    ctx.drawImage(entry.canvas, s[0], s[1], sw, sh);
+    ctx.globalAlpha = 1;
+  }
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = css(col);
+  ctx.lineWidth = lw;
+  ctx.strokeRect(s[0], s[1], sw, sh);
+  ctx.setLineDash([]);
+}
+
+/** 把闭合形状栅格化成 labelme 格式的 mask（value 1 的前景，0 的背景）。 */
+function rasterizeShapeToMask(shape) {
+  const [x0, y0, x1, y1] = boundingBoxOf(shape).flat();
+  const bx = Math.max(0, Math.floor(x0));
+  const by = Math.max(0, Math.floor(y0));
+  const bw = Math.max(1, Math.ceil(x1) - bx);
+  const bh = Math.max(1, Math.ceil(y1) - by);
+  const c = document.createElement('canvas');
+  c.width = bw;
+  c.height = bh;
+  const g = c.getContext('2d');
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, bw, bh);
+  g.fillStyle = '#fff';
+  const local = (p) => [p[0] - bx, p[1] - by];
+  if (shape.shape_type === 'rectangle') {
+    const a = local(shape.points[0]);
+    const b = local(shape.points[1]);
+    g.fillRect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+  } else if (shape.shape_type === 'circle') {
+    const cen = local(shape.points[0]);
+    const r = Math.hypot(shape.points[1][0] - shape.points[0][0], shape.points[1][1] - shape.points[0][1]);
+    g.beginPath();
+    g.arc(cen[0], cen[1], r, 0, Math.PI * 2);
+    g.fill();
+  } else {
+    const pts = shape.points.map(local);
+    g.beginPath();
+    pts.forEach((p, i) => (i === 0 ? g.moveTo(p[0], p[1]) : g.lineTo(p[0], p[1])));
+    g.closePath();
+    g.fill();
+  }
+  // 转成 0/1 灰度图（与桌面版 mask 的取值一致）
+  const data = g.getImageData(0, 0, bw, bh);
+  const px = data.data;
+  for (let i = 0; i < px.length; i += 4) {
+    const v = px[i] > 127 ? 1 : 0;
+    px[i] = v;
+    px[i + 1] = v;
+    px[i + 2] = v;
+    px[i + 3] = 255;
+  }
+  g.putImageData(data, 0, 0);
+  const url = c.toDataURL('image/png');
+  return { mask: url.split(',')[1], points: [[bx, by], [bx + bw, by + bh]] };
+}
+
+/** 把一个形状画到指定 ctx 上（用于合并、栅格化），dx/dy 是画布原点偏移。 */
+function paintShapeOntoCtx(shape, g, dx = 0, dy = 0) {
+  const shift = (p) => [p[0] - dx, p[1] - dy];
+  if (shape.shape_type === 'mask' && shape.mask) {
+    const entry = buildMaskCanvas(shape.mask, [255, 255, 255]);
+    if (entry.ready && entry.canvas) {
+      const [a, b] = shape.points;
+      g.drawImage(entry.canvas, Math.min(a[0], b[0]) - dx, Math.min(a[1], b[1]) - dy);
+      return;
+    }
+    // 还没解码：退化成外接框
+  }
+  if (shape.shape_type === 'rectangle') {
+    const a = shift(shape.points[0]);
+    const b = shift(shape.points[1]);
+    g.fillRect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+    return;
+  }
+  if (shape.shape_type === 'circle') {
+    const c = shift(shape.points[0]);
+    const e = shift(shape.points[1]);
+    g.beginPath();
+    g.arc(c[0], c[1], Math.hypot(e[0] - c[0], e[1] - c[1]), 0, Math.PI * 2);
+    g.fill();
+    return;
+  }
+  const pts = shape.points.map(shift);
+  if (pts.length < 3) return;
+  g.beginPath();
+  pts.forEach((p, i) => (i === 0 ? g.moveTo(p[0], p[1]) : g.lineTo(p[0], p[1])));
+  g.closePath();
+  g.fill();
+}
+
+/** 合并多个形状 → 单个 mask 形状（与桌面版「合并形状」语义一致）。 */
+function mergeSelectedShapes() {
+  const idx = state.selectedSet.length >= 2 ? state.selectedSet.slice() : [];
+  if (idx.length < 2) {
+    toast('多选用 Shift + 逐个点选，至少两个形状');
+    return;
+  }
+  const shapes = idx.map((i) => state.shapes[i]).filter(Boolean);
+  const locked = shapes.find((s) => s.locked);
+  if (locked) {
+    toast('选中的形状里有锁定的，先解锁再合并');
+    return;
+  }
+  const boxes = shapes.map((s) => boundingBoxOf(s));
+  const x0 = Math.max(0, Math.floor(Math.min(...boxes.map((b) => b[0][0]))));
+  const y0 = Math.max(0, Math.floor(Math.min(...boxes.map((b) => b[0][1]))));
+  const x1 = Math.ceil(Math.max(...boxes.map((b) => b[1][0])));
+  const y1 = Math.ceil(Math.max(...boxes.map((b) => b[1][1])));
+  const bw = Math.max(1, x1 - x0);
+  const bh = Math.max(1, y1 - y0);
+  const c = document.createElement('canvas');
+  c.width = bw;
+  c.height = bh;
+  const g = c.getContext('2d');
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, bw, bh);
+  g.fillStyle = '#fff';
+  shapes.forEach((s) => paintShapeOntoCtx(s, g, x0, y0));
+  const data = g.getImageData(0, 0, bw, bh);
+  const px = data.data;
+  for (let i = 0; i < px.length; i += 4) {
+    const v = px[i] > 127 ? 1 : 0;
+    px[i] = v;
+    px[i + 1] = v;
+    px[i + 2] = v;
+    px[i + 3] = 255;
+  }
+  g.putImageData(data, 0, 0);
+  const mask = c.toDataURL('image/png').split(',')[1];
+  commit(() => {
+    const merged = {
+      label: shapes[0].label,
+      points: [[x0, y0], [x1, y1]],
+      group_id: null,
+      description: '',
+      shape_type: 'mask',
+      flags: {},
+      mask,
+    };
+    state.shapes = state.shapes.filter((_, i) => !idx.includes(i));
+    state.shapes.push(merged);
+    state.selected = state.shapes.length - 1;
+    state.selectedSet = [state.selected];
+    state.selectedVertex = -1;
+    return undefined;
+  });
+  refreshDocks();
+  redraw();
+  toast(`已合并 ${idx.length} 个形状为掩码`);
+}
+
+/** 从 mask 里提取最大连通区域的外轮廓，转回多边形（像素级“爬墙”追踪）。 */
+function maskToPolygonPoints(shape) {
+  const [a, b] = shape.points;
+  const x0 = Math.min(a[0], b[0]);
+  const y0 = Math.min(a[1], b[1]);
+  const w = Math.round(Math.abs(b[0] - a[0]));
+  const h = Math.round(Math.abs(b[1] - a[1]));
+  if (w < 2 || h < 2) return null;
+  const entry = buildMaskCanvas(shape.mask, [255, 255, 255]);
+  const readPixels = (canvas) => canvas.getContext('2d').getImageData(0, 0, w, h).data;
+  let px;
+  if (entry.ready && entry.canvas && entry.canvas.width === w && entry.canvas.height === h) {
+    px = readPixels(entry.canvas);
+  } else {
+    return null;
+  }
+  const on = (x, y) => (x >= 0 && y >= 0 && x < w && y < h ? px[(y * w + x) * 4 + 3] > 0 : false);
+  let sx = -1;
+  let sy = -1;
+  for (let y = 0; y < h && sy < 0; y++) {
+    for (let x = 0; x < w; x++) {
+      if (on(x, y)) { sx = x; sy = y; break; }
+    }
+  }
+  if (sx < 0) return null;
+  const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  const contour = [];
+  let cx = sx;
+  let cy = sy;
+  let dir = 0;
+  const startKey = `${sx},${sy},0`;
+  for (let guard = 0; guard < w * h * 4; guard++) {
+    contour.push([cx + x0, cy + y0]);
+    let found = false;
+    for (let k = 0; k < 8; k++) {
+      const nd = (dir + 6 + k) % 8;  // 先右转，再顺时针扫
+      const nx = cx + dirs[nd][0];
+      const ny = cy + dirs[nd][1];
+      if (on(nx, ny)) {
+        cx = nx;
+        cy = ny;
+        dir = nd;
+        found = true;
+        break;
+      }
+    }
+    if (!found) break;
+    if (`${cx},${cy},${dir}` === startKey) break;
+  }
+  return contour.length >= 3 ? contour : null;
 }
 
 function copySelectedShape() {
@@ -1429,9 +1814,10 @@ function editSelectedLabel() {
       s.label = label;
       s.group_id = meta && meta.group_id != null ? meta.group_id : null;
       s.description = (meta && meta.description) || '';
+      s.flags = (meta && meta.flags) || {};
     });
     addLabel(label);
-  }, { group_id: shape.group_id, description: shape.description });
+  }, { group_id: shape.group_id, description: shape.description, flags: shape.flags || {} });
 }
 
 /* ------------------------------------------------------------- label dialog */
@@ -1445,6 +1831,7 @@ function askLabel(defaultValue, cb, initial) {
   input.value = defaultValue || '';
   $('labelGroup').value = initial && initial.group_id != null ? String(initial.group_id) : '';
   $('labelDesc').value = (initial && initial.description) || '';
+  renderFlagChecks('labelFlags', (initial && initial.flags) || {});
 
   // 全部标签进 datalist（输入时可下拉选择，等价桌面版的 label 下拉框）
   const datalist = $('labelDatalist');
@@ -1478,11 +1865,45 @@ function askLabel(defaultValue, cb, initial) {
   }, 30);
 }
 
+function renderFlagChecks(boxId, checkedMap) {
+  const box = $(boxId);
+  if (!box) return;
+  mergeUsedFlags();
+  box.innerHTML = '';
+  if (!state.flagDefs.length) {
+    box.innerHTML = '<span class="hint">还没有 flag 定义，点「+ 新建」添加</span>';
+    return;
+  }
+  state.flagDefs.forEach((name) => {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = name;
+    cb.checked = !!checkedMap[name];
+    const span = document.createElement('span');
+    span.textContent = name;
+    label.appendChild(cb);
+    label.appendChild(span);
+    box.appendChild(label);
+  });
+}
+
+function collectFlagChecks(boxId) {
+  const box = $(boxId);
+  const out = {};
+  if (!box) return out;
+  box.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    if (cb.checked) out[cb.value] = true;
+  });
+  return out;
+}
+
 function currentLabelMeta() {
   const g = $('labelGroup').value.trim();
   return {
     group_id: g === '' ? null : Math.max(0, parseInt(g, 10) || 0),
     description: $('labelDesc').value.trim(),
+    flags: collectFlagChecks('labelFlags'),
   };
 }
 
@@ -1912,6 +2333,7 @@ function resetSessionState() {
   state.shapes = [];
   state.flags = {};
   state.selected = -1;
+  state.selectedSet = [];
   state.images = [];
   state.undo = [];
   state.redo = [];
@@ -2067,6 +2489,11 @@ async function openImage(name, carryShapes = null, keepView = null) {
     toast(e.message, true);
   });
   if (!im.naturalWidth) return;
+
+  if (state.image && !state.keepBc) {
+    state.brightness = 0;
+    state.contrast = 0;
+  }
 
   const canvasImg = document.createElement('canvas');
   canvasImg.width = im.naturalWidth;
@@ -2239,6 +2666,54 @@ function downloadAnnotation() {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
+function exportLabelsFile() {
+  const labels = (state.labels || []).slice();
+  if (!labels.length) {
+    toast('当前工程还没有标签');
+    return;
+  }
+  const blob = new Blob([labels.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'labels.txt';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast(`已导出 ${labels.length} 个标签`);
+}
+
+function importLabelsFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.txt,text/plain';
+  input.addEventListener('change', async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const names = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      if (!names.length) {
+        toast('文件里没有标签', true);
+        return;
+      }
+      const res = await fetch('/api/labels' + projectQuery(), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ labels: names }),
+      });
+      if (!res.ok) throw new Error(`导入失败（${res.status}）`);
+      await loadLabels();
+      refreshDocks();
+      toast(`已导入 ${names.length} 个标签`);
+    } catch (err) {
+      toast(err.message || '导入失败', true);
+    }
+  });
+  input.click();
+}
+
 /* ------------------------------------------------------------------ icons */
 const ICONS = {
   open: '<svg viewBox="0 0 24 24"><path d="M6 3h7l5 5v13H6z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M13 3v5h5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
@@ -2279,6 +2754,12 @@ const MENUS = [
       { sep: true },
       { id: 'save', label: '保存(S)', sc: 'Ctrl+S' },
       { id: 'saveAs', label: '另存为 JSON…', sc: 'Ctrl+Shift+S' },
+      { id: 'autoSave', label: '自动保存（停手 0.8s 落盘）' },
+      { id: 'embedImage', label: '把图像数据内嵌到 JSON（imageData）' },
+      { id: 'exportLabels', label: '导出标签集（labels.txt）…' },
+      { id: 'importLabels', label: '导入标签集（labels.txt）…' },
+      { sep: true },
+      { id: 'imgFlags', label: '编辑图像标记（image flags）…' },
       { sep: true },
       { id: 'closeImage', label: '关闭当前图像', sc: 'Ctrl+W' },
       { id: 'deleteAnnotation', label: '删除标注文件…' },
@@ -2302,6 +2783,7 @@ const MENUS = [
       { id: 'deletePoint', label: '删除选中顶点', sc: 'Backspace' },
       { id: 'addPoint', label: '在边上加点' },
       { id: 'lockShape', label: '锁定 / 解锁形状', sc: 'Ctrl+Shift+L' },
+      { id: 'undoDepth', label: '撤销步数…' },
       { sep: true },
       { id: 'hideShapes', label: '隐藏全部形状' },
       { id: 'showShapes', label: '显示全部形状' },
@@ -2323,7 +2805,8 @@ const MENUS = [
       { id: 'convertRectangle', label: '转换为矩形（外接框）' },
       { id: 'convertLinestrip', label: '转换为折线' },
       { id: 'convertLine', label: '转换为直线' },
-      { id: 'convertMask', label: '转换为掩码（暂不支持）' },
+      { id: 'mergeShapes', label: '合并所选形状（多选后）' },
+      { id: 'convertMask', label: '转换为掩码（二值图）' },
     ],
   },
   {
@@ -2336,10 +2819,16 @@ const MENUS = [
       { id: 'zoomOut', label: '缩小', sc: 'Ctrl+-' },
       { sep: true },
       { id: 'bc', label: '亮度 / 对比度…' },
+      { id: 'keepBc', label: '保留上一张亮度/对比度（切换图像时）' },
       { id: 'fillDrawing', label: '绘制时填充多边形' },
+      { id: 'crosshair', label: '显示十字准星' },
+      { id: 'allowOob', label: '允许点在图像外（不裁剪）' },
       { id: 'keepPrev', label: '保留上一张标注（切换图像时）' },
       { id: 'keepZoom', label: '保留上一张缩放（切换图像时）' },
       { id: 'reload', label: '刷新图像列表' },
+      { sep: true },
+      { id: 'toggleDocks', label: '显示 / 隐藏侧边面板' },
+      { id: 'resetLayout', label: '重置面板布局' },
     ],
   },
   {
@@ -2631,8 +3120,11 @@ function runAction(id) {
     case 'convertLine':
       convertSelectedShape('line');
       break;
+    case 'mergeShapes':
+      mergeSelectedShapes();
+      break;
     case 'convertMask':
-      toast('Web 版暂不支持掩码形状（需服务端栅格化）', true);
+      convertSelectedShape('mask');
       break;
     case 'fitSelection':
       fitToSelection();
@@ -2641,6 +3133,15 @@ function runAction(id) {
       state.fillDrawing = !state.fillDrawing;
       redraw();
       toast(state.fillDrawing ? '绘制时填充已开启' : '绘制时填充已关闭');
+      break;
+    case 'crosshair':
+      state.crosshair = !state.crosshair;
+      redraw();
+      toast(state.crosshair ? '十字准星已显示' : '十字准星已隐藏');
+      break;
+    case 'allowOob':
+      state.allowOob = !state.allowOob;
+      toast(state.allowOob ? '现在可以把点画到图像外' : '点会被裁到图像边界内');
       break;
     case 'keepPrev':
       state.keepPrev = !state.keepPrev;
@@ -2676,6 +3177,39 @@ function runAction(id) {
       break;
     case 'bc':
       openBrightnessModal();
+      break;
+    case 'keepBc':
+      state.keepBc = !state.keepBc;
+      toast(state.keepBc ? '切换图像时保留亮度/对比度' : '已关闭保留亮度/对比度');
+      break;
+    case 'autoSave':
+      state.autoSave = !state.autoSave;
+      toast(state.autoSave ? '自动保存已开启' : '自动保存已关闭，请用 Ctrl+S 手动保存');
+      break;
+    case 'embedImage':
+      state.embedImage = !state.embedImage;
+      toast(state.embedImage ? '保存时会把图像数据写进 JSON（文件会明显变大）' : '已关闭图像内嵌，JSON 只记路径');
+      break;
+    case 'exportLabels':
+      exportLabelsFile();
+      break;
+    case 'importLabels':
+      importLabelsFile();
+      break;
+    case 'toggleDocks':
+      document.body.classList.toggle('docks-hidden');
+      redraw();
+      break;
+    case 'resetLayout':
+      document.body.classList.remove('docks-hidden');
+      redraw();
+      toast('已恢复默认面板布局');
+      break;
+    case 'imgFlags':
+      openImageFlagsModal();
+      break;
+    case 'undoDepth':
+      editUndoDepth();
       break;
     case 'reload':
       reloadImages();
@@ -2784,6 +3318,44 @@ function openBrightnessModal() {
   $('contrast').value = state.contrast;
   $('brightnessVal').value = state.brightness;
   $('contrastVal').value = state.contrast;
+}
+
+/* ----------------------------------------------------------- image flags */
+let imgFlagsDraft = {};
+
+function openImageFlagsModal() {
+  if (!state.image) {
+    toast('先打开一张图像');
+    return;
+  }
+  imgFlagsDraft = Object.assign({}, state.flags || {});
+  renderFlagChecks('imgFlagsList', imgFlagsDraft);
+  $('imgFlagsModal').hidden = false;
+}
+
+function closeImageFlags(save) {
+  $('imgFlagsModal').hidden = true;
+  if (!save) return;
+  const next = collectFlagChecks('imgFlagsList');
+  state.dirty = true;
+  state.flags = next;
+  scheduleDraft();
+  scheduleSave();
+  redraw();
+  toast('已更新图像标记');
+}
+
+function editUndoDepth() {
+  const raw = prompt('撤销步数（1–200）', String(state.undoLimit));
+  if (raw === null) return;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1 || n > 200) {
+    toast('请输入 1–200 之间的整数', true);
+    return;
+  }
+  state.undoLimit = n;
+  if (state.undo.length > n) state.undo = state.undo.slice(-n);
+  toast(`撤销步数已设为 ${n}`);
 }
 
 /* --------------------------------------------------------------- shortcuts */
@@ -2968,6 +3540,29 @@ function bindUi() {
 
   $('btnLabelOk').addEventListener('click', () => closeLabelDialog($('labelInput').value.trim() || null));
   $('btnLabelCancel').addEventListener('click', () => closeLabelDialog(null));
+  $('btnNewFlag').addEventListener('click', () => {
+    const name = (prompt('新建 flag 名称（会保存到本工程 flags.txt）') || '').trim();
+    if (!name) return;
+    if (!state.flagDefs.includes(name)) {
+      state.flagDefs.push(name);
+      saveFlagDefs();
+    }
+    renderFlagChecks('labelFlags', collectFlagChecks('labelFlags'));
+  });
+  $('btnImgFlagsOk').addEventListener('click', () => closeImageFlags(true));
+  $('btnAddImgFlag').addEventListener('click', () => {
+    const input = $('newImgFlagInput');
+    const name = (input.value || '').trim();
+    if (!name) return;
+    if (!state.flagDefs.includes(name)) {
+      state.flagDefs.push(name);
+      saveFlagDefs();
+    }
+    const checked = collectFlagChecks('imgFlagsList');
+    checked[name] = true;
+    input.value = '';
+    renderFlagChecks('imgFlagsList', checked);
+  });
   $('labelInput').addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') {
       ev.preventDefault();
@@ -3070,6 +3665,7 @@ function bindUi() {
     backdrop.addEventListener('mousedown', (ev) => {
       if (ev.target !== backdrop) return;
       if (backdrop.id === 'labelModal') closeLabelDialog(null);
+      else if (backdrop.id === 'imgFlagsModal') closeImageFlags(false);
       else backdrop.hidden = true;
     });
   });

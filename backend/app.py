@@ -176,6 +176,58 @@ def create_project(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"project": {"owner": owner, "name": name}, "owner": owner}
 
 
+@app.put("/api/projects")
+def rename_project(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """改名工程（管理员可指定 owner）。"""
+    owner = _owner(request, payload.get("owner"))
+    old = payload.get("name")
+    new = payload.get("new_name") or payload.get("newName")
+    if not old or not new:
+        raise HTTPException(status_code=400, detail="需要 name 和 new_name")
+    try:
+        name = workspace.rename_project(owner, old, new)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="工程不存在")
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"project": {"owner": owner, "name": name}, "owner": owner}
+
+
+@app.delete("/api/projects")
+def delete_project(request: Request, payload: Optional[Dict[str, Any]] = None,
+                   owner: Optional[str] = None, name: Optional[str] = None) -> Dict[str, Any]:
+    """删除工程（连同全部会话、图片、标注）。"""
+    payload = payload or {}
+    target_owner = _owner(request, payload.get("owner") or owner)
+    target_name = payload.get("name") or name
+    if not target_name:
+        raise HTTPException(status_code=400, detail="需要 name")
+    try:
+        dropped = workspace.delete_project(target_owner, target_name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="工程不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"owner": target_owner, "name": target_name, "sessions": dropped}
+
+
+@app.get("/api/projects/detail")
+def get_project_detail(request: Request, owner: Optional[str] = None,
+                       name: Optional[str] = None) -> Dict[str, Any]:
+    """工程概览（管理端用）：会话、图片、标注、标签集。"""
+    target_owner = _owner(request, owner)
+    if not name:
+        raise HTTPException(status_code=400, detail="需要 name")
+    try:
+        return workspace.project_detail(target_owner, name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="工程不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/api/sessions")
 def create_session(request: Request, owner: Optional[str] = None, project: Optional[str] = None) -> Dict[str, Any]:
     """在当前工程下新建 data/<用户名>/<工程>/<YYYYMMDDHHMMSS>/。"""
@@ -457,6 +509,43 @@ def put_labels(
         "owner": target_owner,
         "project": target_project,
         "path": f"data/{target_owner}/{target_project}/labels.txt",
+    }
+
+
+# ------------------------------------------------------------- project flags
+@app.get("/api/flags")
+def get_flags(request: Request, owner: Optional[str] = None, project: Optional[str] = None) -> Dict[str, Any]:
+    """工程级 flag 定义，落在 data/<用户名>/<工程>/flags.txt（每行一个）。"""
+    target_owner = _owner(request, owner)
+    target_project = _project(project, target_owner)
+    path = workspace.flags_path(target_owner, target_project)
+    flags = read_labels(path)
+    return {
+        "flags": flags,
+        "count": len(flags),
+        "owner": target_owner,
+        "project": target_project,
+        "path": f"data/{target_owner}/{target_project}/flags.txt",
+    }
+
+
+@app.put("/api/flags")
+def put_flags(
+    request: Request, payload: Dict[str, Any], owner: Optional[str] = None, project: Optional[str] = None
+) -> Dict[str, Any]:
+    items = payload.get("flags")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="flags must be a list of strings")
+    target_owner = _owner(request, owner)
+    target_project = _project(project, target_owner)
+    flags = _normalize_labels(items)
+    write_labels(workspace.flags_path(target_owner, target_project), flags)
+    return {
+        "flags": flags,
+        "count": len(flags),
+        "owner": target_owner,
+        "project": target_project,
+        "path": f"data/{target_owner}/{target_project}/flags.txt",
     }
 
 

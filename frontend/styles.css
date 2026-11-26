@@ -396,6 +396,16 @@ canvas { display: block; width: 100%; height: 100%; }
 }
 .recent button:hover { background: var(--hover); }
 
+.flags-block { margin-top: 10px; border-top: 1px solid var(--border-soft); padding-top: 8px; }
+.flags-title { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--text-dim); }
+.flags-title .mini {
+  padding: 1px 6px; font-size: 11px; cursor: default;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 3px;
+}
+.flags-list { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; max-height: 120px; overflow: auto; }
+.flags-list label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text); }
+.flags-list input[type="checkbox"] { accent-color: var(--accent); }
+
 .hint { color: var(--text-dim); font-size: 12px; line-height: 1.7; }
 .hint code { background: var(--bg); padding: 1px 5px; border-radius: 2px; }
 
@@ -452,3 +462,8 @@ canvas { display: block; width: 100%; height: 100%; }
 ::-webkit-scrollbar-thumb { background: #424248; border-radius: 0; }
 ::-webkit-scrollbar-thumb:hover { background: #4f4f57; }
 ::-webkit-scrollbar-track { background: var(--panel); }
+
+/* 视图菜单：显示 / 隐藏侧边面板 */
+body.docks-hidden .docks { display: none; }
+body.docks-hidden .workspace { grid-template-columns: 70px minmax(0, 1fr); }
+
