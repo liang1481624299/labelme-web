@@ -232,6 +232,7 @@ async function load() {
       const res = await api('GET', '/api/auth/me');
       me = res.user;
       $('who').textContent = `${me.username} · ${me.role === 'admin' ? '管理员' : '标注员'}`;
+      $('sideUser').textContent = me.username;
     }
     const overview = await api('GET', '/api/admin/overview');
     $('statUsers').textContent = overview.users;
@@ -397,26 +398,72 @@ $('btnLogout').addEventListener('click', async () => {
 });
 
 /* ---------------------------------------------------------------- 视图切换 */
+const PAGES = ['overview', 'accounts', 'batch', 'ldap', 'sso', 'projects', 'files', 'uploads'];
 const loadedViews = new Set();
+let navReady = false;
 
 function showView(name) {
-  document.querySelectorAll('.admin-tab').forEach((tab) => {
+  if (!PAGES.includes(name)) name = 'overview';
+  document.querySelectorAll('.nav-item').forEach((tab) => {
     tab.classList.toggle('active', tab.dataset.view === name);
   });
-  document.querySelectorAll('.admin-view').forEach((view) => {
-    view.hidden = view.dataset.view !== name;
+  document.querySelectorAll('.page').forEach((view) => {
+    view.hidden = view.dataset.page !== name;
   });
-  if (name === 'ldap' && !loadedViews.has('ldap')) { loadedViews.add('ldap'); loadAuthConfig(); }
-  if (name === 'sso' && !loadedViews.has('sso')) { loadedViews.add('sso'); loadAuthConfig(); }
-  if (name === 'projects' && !loadedViews.has('projects')) {
-    loadedViews.add('projects');
+  if ((name === 'ldap' || name === 'sso') && !loadedViews.has('auth')) {
+    loadedViews.add('auth');
+    loadAuthConfig();
+  }
+  if (name === 'files' && !loadedViews.has('files')) {
+    loadedViews.add('files');
+    loadFiles({});
+  }
+  if (name === 'uploads' && !loadedViews.has('uploads')) {
+    loadedViews.add('uploads');
     loadUploaders();
   }
-  if (name !== 'accounts') location.hash = name;
+  if (name === 'projects' && !loadedViews.has('projects')) loadedViews.add('projects');
+  if (location.hash !== '#' + name) {
+    if (navReady) history.pushState(null, '', '#' + name);
+    else history.replaceState(null, '', '#' + name);
+  }
+  navReady = true;
 }
 
-document.querySelectorAll('.admin-tab').forEach((tab) => {
+document.querySelectorAll('.nav-item').forEach((tab) => {
   tab.addEventListener('click', () => showView(tab.dataset.view));
+});
+
+document.querySelectorAll('.quick-item').forEach((item) => {
+  item.addEventListener('click', () => showView(item.dataset.goto));
+});
+
+window.addEventListener('hashchange', () => {
+  showView((location.hash || '').replace('#', '') || 'overview');
+});
+window.addEventListener('popstate', () => {
+  showView((location.hash || '').replace('#', '') || 'overview');
+});
+
+/* 菜单搜索：按文字过滤左侧菜单 */
+$('adminMenuSearch').addEventListener('input', (event) => {
+  const q = event.target.value.trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll('.nav-item').forEach((item) => {
+    const hit = !q || item.textContent.toLowerCase().includes(q);
+    item.hidden = !hit;
+    if (hit) shown += 1;
+  });
+  $('navEmpty').hidden = shown > 0;
+  document.querySelectorAll('.nav-group').forEach((group) => {
+    let next = group.nextElementSibling;
+    let any = false;
+    while (next && !next.classList.contains('nav-group')) {
+      if (next.classList.contains('nav-item') && !next.hidden) any = true;
+      next = next.nextElementSibling;
+    }
+    group.hidden = !any;
+  });
 });
 
 /* ------------------------------------------------------------- LDAP / SSO */
@@ -749,10 +796,7 @@ async function loadUploaders() {
   }
 }
 
-/* 首次进入：默认账户页；工程管理页顺带把文件浏览器停在 data/ 根 */
-showView(['accounts', 'ldap', 'sso', 'projects'].includes((location.hash || '').replace('#', ''))
-  ? (location.hash || '').replace('#', '')
-  : 'accounts');
-if (!loadedViews.has('projects')) loadFiles({});
+/* 首次进入：按 hash 定位，默认概览 */
+showView((location.hash || '').replace('#', '') || 'overview');
 load();
 

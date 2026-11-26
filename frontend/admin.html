@@ -7,278 +7,384 @@
   <link rel="stylesheet" href="auth.css" />
 </head>
 <body class="admin-body">
-<div class="admin-wrap">
-  <div class="admin-head">
-    <h1>管理后台</h1>
-    <span class="who" id="who">—</span>
-    <span class="spacer"></span>
-    <button class="btn" id="btnBack" type="button">回到标注页</button>
-    <button class="btn btn-danger" id="btnLogout" type="button">退出登录</button>
-  </div>
-
-  <nav class="admin-tabs" id="adminTabs">
-    <button class="admin-tab active" data-view="accounts" type="button">账户</button>
-    <button class="admin-tab" data-view="ldap" type="button">LDAP 设置</button>
-    <button class="admin-tab" data-view="sso" type="button">SSO 设置</button>
-    <button class="admin-tab" data-view="projects" type="button">工程管理</button>
-  </nav>
-
-  <!-- ============================================================ 账户 -->
-  <div class="admin-view" data-view="accounts">
-    <section class="panel">
-      <header>概览</header>
-      <div class="panel-body stats">
-        <div class="stat"><b id="statUsers">—</b><span>账号总数</span></div>
-        <div class="stat"><b id="statEnabled">—</b><span>启用中</span></div>
-        <div class="stat"><b id="statAdmins">—</b><span>管理员</span></div>
-        <div class="stat"><b id="statUploads">—</b><span>已记录上传</span></div>
+<div class="admin-shell">
+  <aside class="admin-side">
+    <div class="admin-brand">
+      <span class="logo">L</span>
+      <div>
+        <b>Labelme</b>
+        <span>管理后台</span>
       </div>
-    </section>
+    </div>
 
-    <section class="panel">
-      <header>新建账号</header>
-      <div class="panel-body">
-        <form class="form-row" id="createForm">
-          <label>账号
-            <input id="newUsername" type="text" placeholder="2–32 位" autocomplete="off" />
-          </label>
-          <label>初始密码
-            <input id="newPassword" type="password" placeholder="至少 8 位" autocomplete="new-password" />
-          </label>
-          <label>角色
-            <select id="newRole">
-              <option value="annotator">标注员</option>
-              <option value="admin">管理员</option>
-            </select>
-          </label>
-          <button class="btn btn-primary" id="btnCreate" type="submit">创建</button>
-        </form>
-        <div class="admin-msg" id="createMsg"></div>
-      </div>
-    </section>
+    <div class="admin-search">
+      <span class="search-ico">⌕</span>
+      <input id="adminMenuSearch" type="search" placeholder="搜索菜单" autocomplete="off" />
+    </div>
 
-    <section class="panel">
-      <header>批量创号</header>
-      <div class="panel-body">
-        <form class="form-row" id="batchForm">
-          <label>数量
-            <input id="batchCount" type="number" min="1" max="200" value="10" />
-          </label>
-          <label>起始 ID（可空）
-            <input id="batchStart" type="text" placeholder="留空 = 10000001 起 / 接着最大号" autocomplete="off" />
-          </label>
-          <button class="btn btn-primary" id="btnBatch" type="submit">生成</button>
-          <button class="btn" id="btnBatchExport" type="button" disabled>导出 CSV</button>
-        </form>
-        <p class="hint">账号名 = 8 位数字 ID，密码默认 = 同一个 ID（纯数字）。明文密码只显示这一次，库里只存 bcrypt 哈希。</p>
-        <div class="admin-msg" id="batchMsg"></div>
-        <pre class="batch-out" id="batchOut" hidden></pre>
-      </div>
-    </section>
+    <nav class="admin-nav" id="adminNav">
+      <div class="nav-group">账号与权限</div>
+      <button class="nav-item active" data-view="overview" type="button"><span class="ico">▦</span>概览</button>
+      <button class="nav-item" data-view="accounts" type="button"><span class="ico">👥</span>账号管理</button>
+      <button class="nav-item" data-view="batch" type="button"><span class="ico">#</span>批量创号</button>
 
-    <section class="panel">
-      <header>
-        <span>账号列表</span>
-        <span class="spacer"></span>
-        <label class="switch">
-          <input type="checkbox" id="allowRegistration" />
-          允许自助注册
-        </label>
-      </header>
-      <div class="panel-body">
-        <table class="table">
-          <thead>
-            <tr><th>账号</th><th>来源</th><th>角色</th><th>状态</th><th>创建时间</th><th>最后登录</th><th>操作</th></tr>
-          </thead>
-          <tbody id="userRows"></tbody>
-        </table>
-        <div class="admin-msg" id="listMsg"></div>
-      </div>
-    </section>
-  </div>
+      <div class="nav-group">身份接入</div>
+      <button class="nav-item" data-view="ldap" type="button"><span class="ico">🔐</span>LDAP 设置</button>
+      <button class="nav-item" data-view="sso" type="button"><span class="ico">🔑</span>SSO 设置</button>
 
-  <!-- ======================================================== LDAP 设置 -->
-  <div class="admin-view" data-view="ldap" hidden>
-    <section class="panel">
-      <header>
-        <span>LDAP / AD 接入</span>
-        <span class="spacer"></span>
-        <span class="tag" id="ldapState">—</span>
-      </header>
-      <div class="panel-body">
-        <p class="hint">
-          不填就完全不参与登录（本地账号照常可用）。填了以后：本地密码先验证，不过再走 LDAP；
-          LDAP 连不上时返回 503 且不累加失败次数，本地账号仍能登录。
-          这里存的值优先于环境变量，清空并「恢复环境变量」即可回退。
-        </p>
-        <form class="config-grid" id="ldapForm">
-          <label>服务器地址 <span class="src" data-src="ldap.url"></span>
-            <input id="ldapUrl" type="text" placeholder="ldap://10.0.0.5:389 或 ldaps://ad.lab.local:636" />
-          </label>
-          <label>Base DN <span class="src" data-src="ldap.base_dn"></span>
-            <input id="ldapBaseDn" type="text" placeholder="dc=lab,dc=local" />
-          </label>
-          <label>用户 DN 模板（模板绑定）
-            <input id="ldapUserDn" type="text" placeholder="uid={username},ou=people,dc=lab,dc=local" />
-          </label>
-          <label>用户过滤器（AD 搜索绑定）
-            <input id="ldapUserFilter" type="text" placeholder="(sAMAccountName={username})" />
-          </label>
-          <label>服务账号 DN（搜索用）
-            <input id="ldapBindDn" type="text" placeholder="cn=svc-labelme,ou=service,dc=lab,dc=local" />
-          </label>
-          <label>服务账号密码
-            <input id="ldapBindPassword" type="password" autocomplete="new-password" placeholder="留空 = 不修改" />
-          </label>
-          <label>管理员组（cn 或完整 DN）
-            <input id="ldapAdminGroup" type="text" placeholder="labelme-admins 或 cn=...,ou=groups,..." />
-          </label>
-          <label>登录页显示名
-            <input id="ldapLabel" type="text" placeholder="学校 LDAP" />
-          </label>
-          <label>连接超时（秒）
-            <input id="ldapTimeout" type="number" min="1" max="60" value="5" />
-          </label>
-          <label class="check">启用 StartTLS
-            <input id="ldapStarttls" type="checkbox" />
-          </label>
-          <div class="config-actions">
-            <button class="btn btn-primary" id="btnSaveLdap" type="submit">保存</button>
-            <button class="btn" id="btnTestLdap" type="button">测试连接</button>
-            <button class="btn btn-danger" id="btnResetLdap" type="button">恢复环境变量</button>
-          </div>
-        </form>
-        <div class="admin-msg" id="ldapMsg"></div>
-      </div>
-    </section>
-  </div>
+      <div class="nav-group">工程与文件</div>
+      <button class="nav-item" data-view="projects" type="button"><span class="ico">📁</span>工程管理</button>
+      <button class="nav-item" data-view="files" type="button"><span class="ico">🗂</span>文件资源管理器</button>
+      <button class="nav-item" data-view="uploads" type="button"><span class="ico">📤</span>上传流水</button>
+      <div class="nav-empty" id="navEmpty" hidden>没有匹配的菜单</div>
+    </nav>
 
-  <!-- ========================================================= SSO 设置 -->
-  <div class="admin-view" data-view="sso" hidden>
-    <section class="panel">
-      <header>
-        <span>统一登录（OIDC）</span>
-        <span class="spacer"></span>
-        <span class="tag" id="ssoState">—</span>
-      </header>
-      <div class="panel-body">
-        <p class="hint">
-          通用 OIDC，Authentik / Keycloak / Entra / 学校统一认证都走这套。填了 issuer + client_id
-          才会在登录页出现按钮。回调地址默认是 <code id="ssoCallback">当前站点/api/auth/sso/callback</code>，
-          IdP 那边注册的 redirect_uri 必须与它完全一致（含协议与端口）。
-        </p>
-        <form class="config-grid" id="ssoForm">
-          <label>Issuer <span class="src" data-src="sso.issuer"></span>
-            <input id="ssoIssuer" type="text" placeholder="https://auth.lab.local/application/o/labelme/" />
-          </label>
-          <label>Client ID <span class="src" data-src="sso.client_id"></span>
-            <input id="ssoClientId" type="text" placeholder="labelme-web" />
-          </label>
-          <label>Client Secret
-            <input id="ssoClientSecret" type="password" autocomplete="new-password" placeholder="留空 = 不修改" />
-          </label>
-          <label>Scopes
-            <input id="ssoScopes" type="text" placeholder="openid profile email" />
-          </label>
-          <label>回调地址（可空，空 = 按访问域名自动拼）
-            <input id="ssoRedirect" type="text" placeholder="https://labelme.example.com/api/auth/sso/callback" />
-          </label>
-          <label>管理员组
-            <input id="ssoAdminGroup" type="text" placeholder="labelme-admins" />
-          </label>
-          <label>账号名字段
-            <input id="ssoUsernameClaim" type="text" placeholder="preferred_username" />
-          </label>
-          <label>组字段
-            <input id="ssoGroupsClaim" type="text" placeholder="groups" />
-          </label>
-          <label>登录页显示名
-            <input id="ssoLabel" type="text" placeholder="学校统一登录" />
-          </label>
-          <label>Secret 传递方式
-            <select id="ssoTokenAuth">
-              <option value="post">post（body 里带 client_secret）</option>
-              <option value="basic">basic（Authorization: Basic）</option>
-            </select>
-          </label>
-          <div class="config-actions">
-            <button class="btn btn-primary" id="btnSaveSso" type="submit">保存</button>
-            <button class="btn" id="btnTestSso" type="button">测试 discovery</button>
-            <button class="btn btn-danger" id="btnResetSso" type="button">恢复环境变量</button>
-          </div>
-        </form>
-        <div class="admin-msg" id="ssoMsg"></div>
-      </div>
-    </section>
-  </div>
+    <div class="admin-side-foot">
+      <span>Labelme 7.11.0</span>
+      <span id="sideUser">—</span>
+    </div>
+  </aside>
 
-  <!-- ======================================================== 工程管理 -->
-  <div class="admin-view" data-view="projects" hidden>
-    <section class="panel">
-      <header>工程</header>
-      <div class="panel-body">
-        <form class="form-row" id="projectForm">
-          <label>所属账号
-            <input id="projectOwner" type="text" placeholder="标注员账号" autocomplete="off" />
-          </label>
-          <label>工程名
-            <input id="projectName" type="text" placeholder="1–40 位" autocomplete="off" />
-          </label>
-          <button class="btn btn-primary" id="btnCreateProject" type="submit">新建工程</button>
-        </form>
-        <form class="form-row" id="projectBatchForm">
-          <label>批量建同名工程（账号一行一个 / 逗号分隔）
-            <textarea id="projectBatchOwners" rows="2" placeholder="10000001,10000002,10000003" style="min-width:320px"></textarea>
-          </label>
-          <button class="btn" id="btnBatchProjects" type="submit">批量创建</button>
-        </form>
-        <table class="table">
-          <thead>
-            <tr><th>账号</th><th>工程</th><th>会话数</th><th>创建时间</th><th>操作</th></tr>
-          </thead>
-          <tbody id="projectRows"></tbody>
-        </table>
-        <div class="admin-msg" id="projectMsg"></div>
-      </div>
-    </section>
+  <main class="admin-main">
+    <header class="admin-top">
+      <span class="top-title">管理后台</span>
+      <span class="spacer"></span>
+      <span class="who" id="who">—</span>
+      <button class="btn" id="btnBack" type="button">回到标注页</button>
+      <button class="btn btn-danger" id="btnLogout" type="button">退出登录</button>
+    </header>
 
-    <section class="panel">
-      <header>
-        <span>文件资源管理器</span>
-        <span class="spacer"></span>
-        <span class="who" id="fsPath">data/</span>
-      </header>
-      <div class="panel-body">
-        <div class="fs-bar">
-          <button class="btn btn-sm" id="fsUp" type="button">↑ 上一层</button>
-          <span class="fs-crumb" id="fsCrumb">data/</span>
-          <span class="spacer"></span>
-          <span class="who" id="fsSummary"></span>
+    <div class="admin-content">
+      <!-- ============================================================ 概览 -->
+      <section class="page" data-page="overview">
+        <div class="page-head">
+          <div class="crumb">账号与权限 <i>›</i> 概览</div>
+          <h2>概览</h2>
+          <p>账号规模、启用状态与文件活动一眼看完。</p>
         </div>
-        <table class="table">
-          <thead>
-            <tr><th>名称</th><th>类型</th><th>大小</th><th>条目 / 图片</th><th>修改时间</th><th>谁传的</th><th>操作</th></tr>
-          </thead>
-          <tbody id="fsRows"></tbody>
-        </table>
-        <div class="admin-msg" id="fsMsg"></div>
-      </div>
-    </section>
+        <section class="panel">
+          <header>运行概况</header>
+          <div class="panel-body stats">
+            <div class="stat"><b id="statUsers">—</b><span>账号总数</span></div>
+            <div class="stat"><b id="statEnabled">—</b><span>启用中</span></div>
+            <div class="stat"><b id="statAdmins">—</b><span>管理员</span></div>
+            <div class="stat"><b id="statUploads">—</b><span>已记录上传</span></div>
+          </div>
+        </section>
 
-    <section class="panel">
-      <header>上传流水（谁上传了什么）</header>
-      <div class="panel-body">
-        <div class="stats" id="uploaderStats"></div>
-        <table class="table">
-          <thead>
-            <tr><th>时间</th><th>谁</th><th>动作</th><th>账号 / 工程 / 会话</th><th>文件</th><th>大小</th></tr>
-          </thead>
-          <tbody id="eventRows"></tbody>
-        </table>
-        <div class="admin-msg" id="eventMsg"></div>
-      </div>
-    </section>
-  </div>
+        <section class="panel">
+          <header>常用操作</header>
+          <div class="panel-body quick-list">
+            <button class="quick-item" data-goto="accounts" type="button">
+              <span><b>新建 / 管理账号</b><small>改角色、启停、重置密码</small></span><em>›</em>
+            </button>
+            <button class="quick-item" data-goto="batch" type="button">
+              <span><b>批量创号</b><small>生成 8 位数字账号并导出 CSV</small></span><em>›</em>
+            </button>
+            <button class="quick-item" data-goto="ldap" type="button">
+              <span><b>LDAP / AD 接入</b><small>让学校账号直接登录</small></span><em>›</em>
+            </button>
+            <button class="quick-item" data-goto="sso" type="button">
+              <span><b>统一登录（OIDC）</b><small>Authentik / Keycloak / Entra</small></span><em>›</em>
+            </button>
+            <button class="quick-item" data-goto="files" type="button">
+              <span><b>文件资源管理器</b><small>浏览、下载、删除 data/ 下的文件</small></span><em>›</em>
+            </button>
+          </div>
+        </section>
+      </section>
+
+      <!-- ======================================================== 账号管理 -->
+      <section class="page" data-page="accounts" hidden>
+        <div class="page-head">
+          <div class="crumb">账号与权限 <i>›</i> 账号管理</div>
+          <h2>账号管理</h2>
+          <p>新建账号、调整角色、启停与重置密码。</p>
+        </div>
+
+        <section class="panel">
+          <header>新建账号</header>
+          <div class="panel-body">
+            <form class="form-row" id="createForm">
+              <label>账号
+                <input id="newUsername" type="text" placeholder="2–32 位" autocomplete="off" />
+              </label>
+              <label>初始密码
+                <input id="newPassword" type="password" placeholder="至少 8 位" autocomplete="new-password" />
+              </label>
+              <label>角色
+                <select id="newRole">
+                  <option value="annotator">标注员</option>
+                  <option value="admin">管理员</option>
+                </select>
+              </label>
+              <button class="btn btn-primary" id="btnCreate" type="submit">创建</button>
+            </form>
+            <div class="admin-msg" id="createMsg"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <header>
+            <span>账号列表</span>
+            <span class="spacer"></span>
+            <label class="switch">
+              <input type="checkbox" id="allowRegistration" />
+              允许自助注册
+            </label>
+          </header>
+          <div class="panel-body">
+            <table class="table">
+              <thead>
+                <tr><th>账号</th><th>来源</th><th>角色</th><th>状态</th><th>创建时间</th><th>最后登录</th><th>操作</th></tr>
+              </thead>
+              <tbody id="userRows"></tbody>
+            </table>
+            <div class="admin-msg" id="listMsg"></div>
+          </div>
+        </section>
+      </section>
+
+      <!-- ============================================================ 批量创号 -->
+      <section class="page" data-page="batch" hidden>
+        <div class="page-head">
+          <div class="crumb">账号与权限 <i>›</i> 批量创号</div>
+          <h2>批量创号</h2>
+          <p>按顺序生成 8 位数字账号，密码同账号，创建后立刻导出。</p>
+        </div>
+        <section class="panel">
+          <header>生成账号</header>
+          <div class="panel-body">
+            <form class="form-row" id="batchForm">
+              <label>数量
+                <input id="batchCount" type="number" min="1" max="200" value="10" />
+              </label>
+              <label>起始 ID（可空）
+                <input id="batchStart" type="text" placeholder="留空 = 10000001 起 / 接着最大号" autocomplete="off" />
+              </label>
+              <button class="btn btn-primary" id="btnBatch" type="submit">生成</button>
+              <button class="btn" id="btnBatchExport" type="button" disabled>导出 CSV</button>
+            </form>
+            <p class="hint">账号名 = 8 位数字 ID，密码默认 = 同一个 ID（纯数字）。明文密码只显示这一次，库里只存 bcrypt 哈希。</p>
+            <div class="admin-msg" id="batchMsg"></div>
+            <pre class="batch-out" id="batchOut" hidden></pre>
+          </div>
+        </section>
+      </section>
+
+      <!-- ========================================================= LDAP 设置 -->
+      <section class="page" data-page="ldap" hidden>
+        <div class="page-head">
+          <div class="crumb">身份接入 <i>›</i> LDAP 设置</div>
+          <h2>LDAP / AD 接入</h2>
+          <p>不填就完全不参与登录，本地账号照常可用。</p>
+        </div>
+        <section class="panel">
+          <header>
+            <span>连接与映射</span>
+            <span class="spacer"></span>
+            <span class="tag" id="ldapState">—</span>
+          </header>
+          <div class="panel-body">
+            <p class="hint">
+              本地密码先验证，不过再走 LDAP；LDAP 连不上时返回 503 且不累加失败次数，本地账号仍能登录。
+              这里存的值优先于环境变量，清空并「恢复环境变量」即可回退。
+            </p>
+            <form class="config-grid" id="ldapForm">
+              <label>服务器地址 <span class="src" data-src="ldap.url"></span>
+                <input id="ldapUrl" type="text" placeholder="ldap://10.0.0.5:389 或 ldaps://ad.lab.local:636" />
+              </label>
+              <label>Base DN <span class="src" data-src="ldap.base_dn"></span>
+                <input id="ldapBaseDn" type="text" placeholder="dc=lab,dc=local" />
+              </label>
+              <label>用户 DN 模板（模板绑定）
+                <input id="ldapUserDn" type="text" placeholder="uid={username},ou=people,dc=lab,dc=local" />
+              </label>
+              <label>用户过滤器（AD 搜索绑定）
+                <input id="ldapUserFilter" type="text" placeholder="(sAMAccountName={username})" />
+              </label>
+              <label>服务账号 DN（搜索用）
+                <input id="ldapBindDn" type="text" placeholder="cn=svc-labelme,ou=service,dc=lab,dc=local" />
+              </label>
+              <label>服务账号密码
+                <input id="ldapBindPassword" type="password" autocomplete="new-password" placeholder="留空 = 不修改" />
+              </label>
+              <label>管理员组（cn 或完整 DN）
+                <input id="ldapAdminGroup" type="text" placeholder="labelme-admins 或 cn=...,ou=groups,..." />
+              </label>
+              <label>登录页显示名
+                <input id="ldapLabel" type="text" placeholder="学校 LDAP" />
+              </label>
+              <label>连接超时（秒）
+                <input id="ldapTimeout" type="number" min="1" max="60" value="5" />
+              </label>
+              <label class="check">启用 StartTLS
+                <input id="ldapStarttls" type="checkbox" />
+              </label>
+              <div class="config-actions">
+                <button class="btn btn-primary" id="btnSaveLdap" type="submit">保存</button>
+                <button class="btn" id="btnTestLdap" type="button">测试连接</button>
+                <button class="btn btn-danger" id="btnResetLdap" type="button">恢复环境变量</button>
+              </div>
+            </form>
+            <div class="admin-msg" id="ldapMsg"></div>
+          </div>
+        </section>
+      </section>
+
+      <!-- ========================================================= SSO 设置 -->
+      <section class="page" data-page="sso" hidden>
+        <div class="page-head">
+          <div class="crumb">身份接入 <i>›</i> SSO 设置</div>
+          <h2>统一登录（OIDC）</h2>
+          <p>Authentik / Keycloak / Entra / 学校统一认证都走这套。</p>
+        </div>
+        <section class="panel">
+          <header>
+            <span>OIDC 参数</span>
+            <span class="spacer"></span>
+            <span class="tag" id="ssoState">—</span>
+          </header>
+          <div class="panel-body">
+            <p class="hint">
+              填了 issuer + client_id 才会在登录页出现按钮。回调地址默认是 <code id="ssoCallback">当前站点/api/auth/sso/callback</code>，
+              IdP 那边注册的 redirect_uri 必须与它完全一致（含协议与端口）。
+            </p>
+            <form class="config-grid" id="ssoForm">
+              <label>Issuer <span class="src" data-src="sso.issuer"></span>
+                <input id="ssoIssuer" type="text" placeholder="https://auth.lab.local/application/o/labelme/" />
+              </label>
+              <label>Client ID <span class="src" data-src="sso.client_id"></span>
+                <input id="ssoClientId" type="text" placeholder="labelme-web" />
+              </label>
+              <label>Client Secret
+                <input id="ssoClientSecret" type="password" autocomplete="new-password" placeholder="留空 = 不修改" />
+              </label>
+              <label>Scopes
+                <input id="ssoScopes" type="text" placeholder="openid profile email" />
+              </label>
+              <label>回调地址（可空，空 = 按访问域名自动拼）
+                <input id="ssoRedirect" type="text" placeholder="https://labelme.example.com/api/auth/sso/callback" />
+              </label>
+              <label>管理员组
+                <input id="ssoAdminGroup" type="text" placeholder="labelme-admins" />
+              </label>
+              <label>账号名字段
+                <input id="ssoUsernameClaim" type="text" placeholder="preferred_username" />
+              </label>
+              <label>组字段
+                <input id="ssoGroupsClaim" type="text" placeholder="groups" />
+              </label>
+              <label>登录页显示名
+                <input id="ssoLabel" type="text" placeholder="学校统一登录" />
+              </label>
+              <label>Secret 传递方式
+                <select id="ssoTokenAuth">
+                  <option value="post">post（body 里带 client_secret）</option>
+                  <option value="basic">basic（Authorization: Basic）</option>
+                </select>
+              </label>
+              <div class="config-actions">
+                <button class="btn btn-primary" id="btnSaveSso" type="submit">保存</button>
+                <button class="btn" id="btnTestSso" type="button">测试 discovery</button>
+                <button class="btn btn-danger" id="btnResetSso" type="button">恢复环境变量</button>
+              </div>
+            </form>
+            <div class="admin-msg" id="ssoMsg"></div>
+          </div>
+        </section>
+      </section>
+
+      <!-- ======================================================== 工程管理 -->
+      <section class="page" data-page="projects" hidden>
+        <div class="page-head">
+          <div class="crumb">工程与文件 <i>›</i> 工程管理</div>
+          <h2>工程管理</h2>
+          <p>按账号建工程、批量建同名工程，或改名、删工程。</p>
+        </div>
+        <section class="panel">
+          <header>工程</header>
+          <div class="panel-body">
+            <form class="form-row" id="projectForm">
+              <label>所属账号
+                <input id="projectOwner" type="text" placeholder="标注员账号" autocomplete="off" />
+              </label>
+              <label>工程名
+                <input id="projectName" type="text" placeholder="1–40 位" autocomplete="off" />
+              </label>
+              <button class="btn btn-primary" id="btnCreateProject" type="submit">新建工程</button>
+            </form>
+            <form class="form-row" id="projectBatchForm">
+              <label>批量建同名工程（账号一行一个 / 逗号分隔）
+                <textarea id="projectBatchOwners" rows="2" placeholder="10000001,10000002,10000003" style="min-width:320px"></textarea>
+              </label>
+              <button class="btn" id="btnBatchProjects" type="submit">批量创建</button>
+            </form>
+            <table class="table">
+              <thead>
+                <tr><th>账号</th><th>工程</th><th>会话数</th><th>创建时间</th><th>操作</th></tr>
+              </thead>
+              <tbody id="projectRows"></tbody>
+            </table>
+            <div class="admin-msg" id="projectMsg"></div>
+          </div>
+        </section>
+      </section>
+
+      <!-- ==================================================== 文件资源管理器 -->
+      <section class="page" data-page="files" hidden>
+        <div class="page-head">
+          <div class="crumb">工程与文件 <i>›</i> 文件资源管理器</div>
+          <h2>文件资源管理器</h2>
+          <p>逐层浏览 data/ 下的账号、工程、会话，直接下载或删除。</p>
+        </div>
+        <section class="panel">
+          <header>
+            <span>data/</span>
+            <span class="spacer"></span>
+            <span class="who" id="fsPath">data/</span>
+          </header>
+          <div class="panel-body">
+            <div class="fs-bar">
+              <button class="btn btn-sm" id="fsUp" type="button">↑ 上一层</button>
+              <span class="fs-crumb" id="fsCrumb">data/</span>
+              <span class="spacer"></span>
+              <span class="who" id="fsSummary"></span>
+            </div>
+            <table class="table">
+              <thead>
+                <tr><th>名称</th><th>类型</th><th>大小</th><th>条目 / 图片</th><th>修改时间</th><th>谁传的</th><th>操作</th></tr>
+              </thead>
+              <tbody id="fsRows"></tbody>
+            </table>
+            <div class="admin-msg" id="fsMsg"></div>
+          </div>
+        </section>
+      </section>
+
+      <!-- ======================================================== 上传流水 -->
+      <section class="page" data-page="uploads" hidden>
+        <div class="page-head">
+          <div class="crumb">工程与文件 <i>›</i> 上传流水</div>
+          <h2>上传流水</h2>
+          <p>谁上传了什么、谁保存了标注、谁删了文件，按时间倒序。</p>
+        </div>
+        <section class="panel">
+          <header>最近活动</header>
+          <div class="panel-body">
+            <div class="stats" id="uploaderStats"></div>
+            <table class="table">
+              <thead>
+                <tr><th>时间</th><th>谁</th><th>动作</th><th>账号 / 工程 / 会话</th><th>文件</th><th>大小</th></tr>
+              </thead>
+              <tbody id="eventRows"></tbody>
+            </table>
+            <div class="admin-msg" id="eventMsg"></div>
+          </div>
+        </section>
+      </section>
+    </div>
+  </main>
 </div>
 <script src="admin.js"></script>
 </body>
