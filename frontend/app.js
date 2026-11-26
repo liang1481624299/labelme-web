@@ -102,6 +102,7 @@ const state = {
   labels: [],
   flagDefs: [],
   flags: {},
+  extra: {},             // 桌面版 JSON 的自定义顶层字段（other_data），保存时原样带回
   autoSave: true,
   embedImage: false,     // 是否把图像 base64 写进 JSON（桌面版 "Store image data"）
   crosshair: true,       // 十字准星
@@ -594,7 +595,8 @@ function buildAnnotation() {
       imageData = null;
     }
   }
-  return {
+  // 保留桌面版写入的自定义顶层字段（labelme 的 other_data），不静默丢弃
+  const base = {
     version: VERSION,
     flags: state.flags || {},
     shapes: state.shapes.map(cleanShape),
@@ -603,6 +605,7 @@ function buildAnnotation() {
     imageHeight: state.image ? state.image.h : 0,
     imageWidth: state.image ? state.image.w : 0,
   };
+  return Object.assign({}, state.extra || {}, base);
 }
 
 function scheduleSave() {
@@ -2560,14 +2563,21 @@ async function openImage(name, carryShapes = null, keepView = null) {
     const ann = await req('GET', `/api/sessions/${state.sessionId}/annotations/${encodeURIComponent(name)}`);
     state.shapes = Array.isArray(ann.shapes) ? ann.shapes : [];
     state.flags = ann.flags && typeof ann.flags === 'object' ? ann.flags : {};
+    const known = new Set(['version', 'flags', 'shapes', 'imagePath', 'imageData', 'imageHeight', 'imageWidth']);
+    state.extra = {};
+    Object.keys(ann || {}).forEach((k) => {
+      if (!known.has(k)) state.extra[k] = ann[k];
+    });
     state.shapes.forEach((s) => addLabel(s.label));
   } catch (e) {
     if (e.status === 404) {
       state.shapes = [];
       state.flags = {};
+      state.extra = {};
     } else {
       toast(`读取标注失败：${e.message}`, true);
       state.shapes = [];
+      state.extra = {};
     }
   }
 
