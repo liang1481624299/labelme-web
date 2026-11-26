@@ -450,13 +450,13 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 - 视图：十字准星开关、允许点在图像外（`allow_out_of_bounds_points`）、显示/隐藏侧边面板、重置面板布局；
   滚轮与按钮缩放固定以图像中心为锚点，画面不随鼠标位置漂移；绘制中的矩形/圆/多边形预览实时裁到图像边界
 
-**未对标**：`AI-Segment`、`AI-Find All`、SAM 模型下拉与「模型管理」（`open_models`）。这些依赖服务端 SAM 权重与 GPU，
-纯 Web 源码部署没有模型可用，标注页的 AI 入口仍置灰。管理后台已经提供 **AI 模型**配置页：
-SAM 这一段内置了与桌面版一致的模型目录（SAM 2 Base+、SAM 3、EfficientSAM Tiny/Small、
-SAM 2 Small/Large、SAM Base/Large/Huge、YOLO-World），可以选择默认模型、保存推理服务地址、
-API Key 与超时，并用 `GET <endpoint>/health` 做连通性测试；另有一套 OpenAI 兼容接口配置
-（地址、模型、Key、超时）作为预留，只保存不参与标注。真正的分割推理尚未接入 Web 标注页
-（后端不加载 torch/SAM 权重）。
+**未对标**：标注页的 `AI-Segment`、`AI-Find All`、SAM 模型下拉，以及桌面版的模型下载 / 删除（`open_models`）。
+这些依赖服务端 SAM 权重与 GPU，纯 Web 源码部署没有模型可用，标注页的 AI 入口仍置灰。
+管理后台已经提供 **AI 模型**配置页：SAM 这一段内置了与桌面版一致的模型目录（SAM 2 Base+、SAM 3、
+EfficientSAM Tiny/Small、SAM 2 Small/Large、SAM Base/Large/Huge、YOLO-World），可以选择默认模型、
+保存推理服务地址、API Key 与超时，并用 `GET <endpoint>/health` 做连通性测试；另有一套 OpenAI 兼容
+接口配置（地址、模型、Key、超时）作为预留，只保存不参与标注，测试连接会请求 `<base_url>/models`。
+真正的分割推理尚未接入 Web 标注页（后端不加载 torch/SAM 权重）。
 要打通需要在服务端部署一个实现 `/health` 的推理服务，再补 `/api/ai/segment` 代理与前端点选交互。
 
 其余有意不做或形态不同、不影响标注结果的差异：
