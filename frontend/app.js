@@ -581,6 +581,7 @@ function cleanShape(shape) {
     shape_type: shape.shape_type,
     flags: shape.flags || {},
     mask: shape.mask === undefined ? null : shape.mask,
+    locked: !!shape.locked,
   };
 }
 
@@ -1328,9 +1329,8 @@ function setShapeVisibility(show) {
 }
 
 function shapeCenter(shape) {
-  const xs = shape.points.map((p) => p[0]);
-  const ys = shape.points.map((p) => p[1]);
-  return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+  const [x0, y0, x1, y1] = pointBounds(shape.points);
+  return [(x0 + x1) / 2, (y0 + y1) / 2];
 }
 
 function selectNeighbor(direction) {
@@ -1371,12 +1371,7 @@ function fitToSelection() {
   }
   const shape = state.shapes[state.selected];
   if (!shape.points.length) return;
-  const xs = shape.points.map((p) => p[0]);
-  const ys = shape.points.map((p) => p[1]);
-  const x0 = Math.min(...xs);
-  const x1 = Math.max(...xs);
-  const y0 = Math.min(...ys);
-  const y1 = Math.max(...ys);
+  const [x0, y0, x1, y1] = pointBounds(shape.points);
   const w = Math.max(8, x1 - x0);
   const h = Math.max(8, y1 - y0);
   const pad = 40;
@@ -1389,15 +1384,30 @@ function fitToSelection() {
   redraw();
 }
 
+function pointBounds(points) {
+  // 不用 Math.min(...xs)：掩码转出来的多边形动辄上万个点，展开成实参会爆栈
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const p of points) {
+    if (p[0] < x0) x0 = p[0];
+    if (p[1] < y0) y0 = p[1];
+    if (p[0] > x1) x1 = p[0];
+    if (p[1] > y1) y1 = p[1];
+  }
+  if (!Number.isFinite(x0)) return [0, 0, 0, 0];
+  return [x0, y0, x1, y1];
+}
+
 function boundingBoxOf(shape) {
   if (shape.shape_type === 'circle') {
     const [c, e] = shape.points;
     const r = Math.hypot(e[0] - c[0], e[1] - c[1]);
     return [[c[0] - r, c[1] - r], [c[0] + r, c[1] + r]];
   }
-  const xs = shape.points.map((p) => p[0]);
-  const ys = shape.points.map((p) => p[1]);
-  return [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]];
+  const [x0, y0, x1, y1] = pointBounds(shape.points);
+  return [[x0, y0], [x1, y1]];
 }
 
 function circleToPolygon(center, edge, segments = 32) {
@@ -1705,6 +1715,39 @@ function mergeSelectedShapes() {
 }
 
 /** 从 mask 里提取最大连通区域的外轮廓，转回多边形（像素级“爬墙”追踪）。 */
+function simplifyPolyline(points, epsilon = 1.0) {
+  // 掩码轮廓是逐像素走出来的，矩形也能有几千个点；Douglas-Peucker 压到肉眼一致的程度。
+  // 用显式栈而不是递归，点太多时递归一样会爆栈。
+  const n = points.length;
+  if (n < 4) return points;
+  const keep = new Uint8Array(n);
+  keep[0] = 1;
+  keep[n - 1] = 1;
+  const stack = [[0, n - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    const [ax, ay] = points[a];
+    const [bx, by] = points[b];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len = Math.hypot(dx, dy) || 1;
+    let maxD = -1;
+    let idx = -1;
+    for (let i = a + 1; i < b; i++) {
+      const d = Math.abs(dy * points[i][0] - dx * points[i][1] + bx * ay - by * ax) / len;
+      if (d > maxD) {
+        maxD = d;
+        idx = i;
+      }
+    }
+    if (maxD > epsilon && idx > 0) {
+      keep[idx] = 1;
+      stack.push([a, idx], [idx, b]);
+    }
+  }
+  return points.filter((_, i) => keep[i]);
+}
+
 function maskToPolygonPoints(shape) {
   const [a, b] = shape.points;
   const x0 = Math.min(a[0], b[0]);
@@ -1753,7 +1796,7 @@ function maskToPolygonPoints(shape) {
     if (!found) break;
     if (`${cx},${cy},${dir}` === startKey) break;
   }
-  return contour.length >= 3 ? contour : null;
+  return contour.length >= 3 ? simplifyPolyline(contour, 1.0) : null;
 }
 
 function copySelectedShape() {

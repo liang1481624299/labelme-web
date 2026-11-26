@@ -426,12 +426,24 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 - 多选与合并：Shift + 点选多个形状，转换菜单「合并所选形状」= 并集栅格化成单个 mask（与桌面版一致）
 - 工程级配置：label 对话框带 Group ID、描述、flags 勾选；图像级 image flags；`GET/PUT /api/flags` 存到工程 `flags.txt`
 - 保存选项：自动保存开关、撤销步数（默认 20）、把图像 base64 内嵌到 JSON（`imageData`）、切换图像时保留亮度/对比度
+- 形状锁定（Ctrl+Shift+L）：锁定状态写入 JSON 的 `locked` 字段，重开图像后仍然生效
 - 标签集：菜单「导出 / 导入标签集（labels.txt）」
 - 视图：十字准星开关、允许点在图像外（`allow_out_of_bounds_points`）、显示/隐藏侧边面板、重置面板布局
 
-**未对标**：`AI-Segment`、`AI-Find All`、SAM 模型下拉。这几项依赖服务端 SAM 权重与 GPU，
+**未对标**：`AI-Segment`、`AI-Find All`、SAM 模型下拉与「模型管理」（`open_models`）。这些依赖服务端 SAM 权重与 GPU，
 纯 Web 源码部署没有模型可用，界面上保留入口但置灰，鼠标悬停会说明。普通标注流程不受影响。
-另：`epsilon`（多边形简化阈值）目前固定 0.01，界面上没放滑块；如有需要可加。
+
+其余有意不做或形态不同、不影响标注结果的差异：
+
+- 输出目录（`change_output_dir`）：Web 端固定写服务端 `data/`，没有本地输出目录概念。
+- 自动化接口（`labelme/_automation`）：桌面版给脚本调用；Web 用 HTTP API 代替。
+- 配置文件（`open_config`）：桌面版编辑 `default_config.yaml`；Web 的相应选项放进了菜单，不读 YAML。
+- 教程页：Web 用「帮助 → 快捷键与关于」代替，没有独立教程窗口。
+- 唯一标签列表 / 未使用标签区：Web 只按形状列标签，不做「已定义但未使用」视图。
+- 图像列表「隐藏已标注」筛选：Web 只有文件名搜索，已标注状态用行首勾选框展示。
+
+另：`epsilon`（掩码转多边形时的简化阈值）目前固定 1.0，界面上没放滑块；桌面版默认是 10.0，
+Web 版结果更贴近原始轮廓，但点数更多。需要完全一致可后续做成配置项。
 
 ## HTTP API
 
