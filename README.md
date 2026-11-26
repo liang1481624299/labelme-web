@@ -166,6 +166,59 @@ data/20260101013030/114.json    ← 该图的标注
 
 标注页只多了一个「文件 → 退出登录」和状态栏右下角的当前账号名，没有管理相关按钮。
 
+## LDAP / AD 接入（可选，纯环境变量）
+
+不配就是现在这套本地账号，一行代码都不会走到 LDAP；配上之后，**本地密码仍然优先**，
+本地过不了才去 LDAP 验证 —— 这样 LDAP 挂了管理员还能从本地账号进来救场。
+
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `LABELME_WEB_LDAP_URL` | 是 | `ldap://host:389` 或 `ldaps://host:636`；配了它才算开启 |
+| `LABELME_WEB_LDAP_BASE_DN` | 视情况 | 搜索基准，如 `ou=people,dc=lab,dc=local` |
+| `LABELME_WEB_LDAP_USER_DN` | 二选一 | 直接拼 DN 的模板，`{username}` / `{base_dn}` 会被替换 |
+| `LABELME_WEB_LDAP_USER_FILTER` | 二选一 | AD 常用：`(sAMAccountName={username})`，先搜 DN 再绑 |
+| `LABELME_WEB_LDAP_BIND_DN` / `_BIND_PASSWORD` | 搜索模式 | 用来搜索的服务账号；匿名可搜就留空 |
+| `LABELME_WEB_LDAP_ADMIN_GROUP` | 否 | 组名（`labelme-admins`）或组 DN；命中就把影子账号设成管理员 |
+| `LABELME_WEB_LDAP_STARTTLS` | 否 | `1` 时先 StartTLS 再绑定（`ldap://` 场景强烈建议） |
+| `LABELME_WEB_LDAP_TIMEOUT` | 否 | 连接/接收超时秒数，默认 5 |
+| `LABELME_WEB_LDAP_LABEL` | 否 | 登录页上的名字，默认「LDAP / 域账号」 |
+
+两种典型配置：
+
+```bash
+# 1) OpenLDAP / 通用目录：模板绑定，不需要服务账号
+LABELME_WEB_LDAP_URL=ldaps://ldap.lab.local:636
+LABELME_WEB_LDAP_BASE_DN=ou=people,dc=lab,dc=local
+LABELME_WEB_LDAP_USER_DN=uid={username},ou=people,dc=lab,dc=local
+LABELME_WEB_LDAP_ADMIN_GROUP=labelme-admins
+
+# 2) Windows AD：按 sAMAccountName 搜 DN 再绑定
+LABELME_WEB_LDAP_URL=ldap://dc01.lab.local:389
+LABELME_WEB_LDAP_STARTTLS=1
+LABELME_WEB_LDAP_BASE_DN=dc=lab,dc=local
+LABELME_WEB_LDAP_USER_FILTER=(sAMAccountName={username})
+LABELME_WEB_LDAP_BIND_DN=cn=svc-labelme,ou=services,dc=lab,dc=local
+LABELME_WEB_LDAP_BIND_PASSWORD=********
+LABELME_WEB_LDAP_ADMIN_GROUP=CN=labelme-admins,OU=groups,DC=lab,DC=local
+```
+
+行为约定（这几条是刻意设计，不是实现细节）：
+
+- 认证成功后在 `users` 里落一条影子账号（`source='ldap'`，`password_hash='!ldap'` 占位），
+  之后工程、会话、`/admin`、批量建号全部照旧；账号名必须符合本站命名规则（它同时是 `data/` 的目录名）
+- 组命中管理员时**只升不降**，避免 LDAP 组配错把唯一的管理员降权锁死
+- LDAP 连不上 → HTTP 503「LDAP 暂不可用，请先用本地账号登录」，且**不累加登录失败次数**，
+  免得 LDAP 抖动把本地账号一起锁了
+- 密码错 → 401，和本地密码错同一个提示，不区分「账号不存在 / 密码错」
+- `/api/auth/methods` 只返回「开没开」和显示名，不返回服务器地址；登录页据此显示一句提示
+
+离线自检（不需要真的 LDAP 服务器，用假连接跑控制流）：
+
+```bash
+python dev/ldap_mock_check.py     # 13 项：模板/搜索绑定、密码错、组映射、影子账号、幂等
+```
+
+
 ## 崩溃 / 强杀 / 蓝屏后的会话恢复
 
 浏览器被任务管理器强杀、渲染进程崩溃、笔记本蓝屏或直接断电，都不是「正常关闭」，
@@ -336,6 +389,7 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 | POST | `/api/auth/login` | 登录，成功后下发 `lmweb_session` cookie |
 | POST | `/api/auth/logout` | 退出登录并删掉服务端 token |
 | GET | `/api/auth/me` | 当前账号 `{user:{id,username,role,enabled}}` |
+| GET | `/api/auth/methods` | 登录方式（`{password:true, ldap:{enabled,label}}`），不泄露 LDAP 地址 |
 | GET | `/api/admin/users` | 账号列表（仅管理员） |
 | POST | `/api/admin/users` | 新建账号 `{username,password,role}` |
 | PATCH | `/api/admin/users/{id}` | 改角色 / 启停 / 重置密码 |

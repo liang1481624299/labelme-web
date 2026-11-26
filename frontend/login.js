@@ -9,6 +9,7 @@ let next = params.get('next') || '/';
 if (!next.startsWith('/') || next.startsWith('//')) next = '/';
 
 let mode = 'login';
+let ldapHintText = '';
 
 function setMode(value) {
   mode = value;
@@ -16,6 +17,11 @@ function setMode(value) {
     tab.classList.toggle('active', tab.dataset.tab === value);
   });
   $('registerHint').hidden = value !== 'register';
+  if (value === 'register') $('ldapHint').hidden = true;
+  if (value === 'login' && ldapHintText) {
+    $('ldapHint').textContent = ldapHintText;
+    $('ldapHint').hidden = false;
+  }
   $('authSubmit').textContent = value === 'register' ? '注册并登录' : '登录';
   $('password').autocomplete = value === 'register' ? 'new-password' : 'current-password';
   showError('');
@@ -70,3 +76,21 @@ if (next === '/admin') {
 
 setMode('login');
 $('username').focus();
+
+/* 后端如果开了 LDAP 接入层，就在登录框下面写一句提示；
+   只拿开关和显示名，拿不到服务器地址（那是运维配置，不该出现在页面上）。 */
+(async () => {
+  try {
+    const res = await fetch('/api/auth/methods', { credentials: 'same-origin' });
+    if (!res.ok) return;
+    const data = await res.json();
+    const ldap = (data && data.ldap) || {};
+    if (!ldap.enabled) return;
+    ldapHintText = `可以直接用${ldap.label || 'LDAP'}账号登录；如果没有，仍可用本站账号密码登录。`;
+    if (mode === 'login') {
+      const hint = $('ldapHint');
+      hint.textContent = ldapHintText;
+      hint.hidden = false;
+    }
+  } catch (err) { /* 拿不到就当作没开 */ }
+})();

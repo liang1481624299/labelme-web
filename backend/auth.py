@@ -29,6 +29,8 @@ import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 
+from backend import ldap_auth
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("LABELME_WEB_DB") or (BASE_DIR / "var" / "labelme-web.db"))
 SESSION_COOKIE = "lmweb_session"
@@ -87,6 +89,12 @@ def init_db() -> None:
             );
             """
         )
+        # LDAP 接入层：影子账号要记来源和外部 ID（老库用 ALTER 补齐，幂等）
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "source" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN source TEXT NOT NULL DEFAULT 'local'")
+        if "external_id" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN external_id TEXT")
         conn.commit()
 
 
@@ -141,6 +149,7 @@ def validate_username(username: Any) -> str:
 
 # ------------------------------------------------------------------ users
 def user_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    keys = row.keys()
     return {
         "id": row["id"],
         "username": row["username"],
@@ -148,6 +157,8 @@ def user_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "enabled": bool(row["enabled"]),
         "created_at": row["created_at"],
         "last_login_at": row["last_login_at"],
+        "source": row["source"] if "source" in keys else "local",
+        "external_id": row["external_id"] if "external_id" in keys else None,
     }
 
 
@@ -164,6 +175,35 @@ def find_user(username: str) -> Optional[sqlite3.Row]:
 def find_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
     with connect() as conn:
         return conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+
+
+# ------------------------------------------------------------------ ldap shadow users
+def ldap_shadow_user(lu: "ldap_auth.LdapUser") -> sqlite3.Row:
+    """LDAP 认证通过后落一条本地影子账号：权限、工程、会话全都复用原有逻辑。
+
+    * 账号名必须符合本站命名规则（它同时是 data/ 下的目录名）
+    * 已存在的同名本地账号不覆盖密码，只按组映射补管理员权限（不降级，避免误锁）
+    """
+    if not USERNAME_RE.match(lu.username or ""):
+        raise HTTPException(status_code=403, detail="该 LDAP 账号名不符合本站命名规则（2–32 位，中英文/数字/_ - .）")
+    with _LOCK:
+        row = find_user(lu.username)
+        if row is None:
+            role = "admin" if (lu.is_admin or count_users() == 0) else "annotator"
+            with connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO users(username, password_hash, role, enabled, created_at, last_login_at, source, external_id) "
+                    "VALUES(?,?,?,1,?,?,?,?)",
+                    (lu.username, ldap_auth.SHADOW_HASH, role, now_iso(), now_iso(), "ldap", lu.dn),
+                )
+                conn.commit()
+            return find_user_by_id(cur.lastrowid)
+        if lu.is_admin and row["role"] != "admin":
+            with connect() as conn:
+                conn.execute("UPDATE users SET role='admin' WHERE id=?", (row["id"],))
+                conn.commit()
+            row = find_user_by_id(row["id"])
+        return row
 
 
 # ------------------------------------------------------------------ token / cookie
@@ -254,7 +294,7 @@ def require_admin(user: Dict[str, Any] = None) -> Dict[str, Any]:
 async def auth_guard(request: Request, call_next):
     """最外层兜底：除了登录/注册/健康检查，/api/* 一律要求登录。"""
     path = request.url.path
-    public = path in {"/api/health", "/api/auth/login", "/api/auth/register"}
+    public = path in {"/api/health", "/api/auth/login", "/api/auth/register", "/api/auth/methods"}
     if path.startswith("/api/") and not public:
         if user_from_request(request) is None:
             return JSONResponse({"detail": "请先登录"}, status_code=401)
@@ -343,7 +383,30 @@ def login(request: Request, payload: Dict[str, Any]) -> JSONResponse:
         raise HTTPException(status_code=400, detail="请输入账号和密码")
     check_throttle(request, username)
     row = find_user(username)
-    if row is None or not verify_password(password, row["password_hash"]):
+    via = "local"
+
+    # 1) 本地密码优先（管理员应急入口，LDAP 挂了也能进）
+    local_ok = row is not None and verify_password(password, row["password_hash"])
+    if not local_ok:
+        # 2) 本地不过就交给 LDAP（只有配了 LABELME_WEB_LDAP_URL 才生效）
+        if not ldap_auth.enabled():
+            note_failure(request, username)
+            raise HTTPException(status_code=401, detail="账号或密码不正确")
+        try:
+            lu = ldap_auth.authenticate(username, password)
+        except ldap_auth.LdapDenied:
+            note_failure(request, username)
+            raise HTTPException(status_code=401, detail="账号或密码不正确")
+        except ldap_auth.LdapUnavailable as exc:
+            # 连不上不算密码错，不累加失败次数，避免把本地账号也一起锁了
+            raise HTTPException(
+                status_code=503,
+                detail=f"{ldap_auth.label()} 暂不可用（{exc}），请先用本地账号登录",
+            )
+        row = ldap_shadow_user(lu)
+        via = "ldap"
+
+    if row is None:
         note_failure(request, username)
         raise HTTPException(status_code=401, detail="账号或密码不正确")
     if not row["enabled"]:
@@ -353,9 +416,15 @@ def login(request: Request, payload: Dict[str, Any]) -> JSONResponse:
         conn.execute("UPDATE users SET last_login_at=? WHERE id=?", (now_iso(), row["id"]))
         conn.commit()
     token = issue_session(row["id"])
-    response = JSONResponse({"user": user_row_to_dict(find_user_by_id(row["id"]))})
+    response = JSONResponse({"user": user_row_to_dict(find_user_by_id(row["id"])), "via": via})
     set_login_cookie(response, request, token)
     return response
+
+
+@router.get("/methods")
+def auth_methods() -> Dict[str, Any]:
+    """登录页用：告诉前端要不要显示「LDAP / 域账号」的提示，不泄露服务器地址。"""
+    return {"password": True, "ldap": ldap_auth.public_config()}
 
 
 @router.post("/logout")
