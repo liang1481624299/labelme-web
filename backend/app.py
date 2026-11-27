@@ -27,12 +27,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backend import activity, auth, settings_store, workspace
+from backend import activity, auth, settings_store, user_settings, workspace
 
 DEFAULT_MAX_UPLOAD_MB = int(os.environ.get("LABELME_WEB_MAX_UPLOAD_MB", "200"))
 LABELME_VERSION = "7.11.0"
@@ -549,6 +549,22 @@ def put_labels(
         "project": target_project,
         "path": f"data/{target_owner}/{target_project}/labels.txt",
     }
+
+
+# ------------------------------------------------------------ user preferences
+@app.get("/api/settings")
+def get_user_settings(user: Dict[str, Any] = Depends(auth.current_user)) -> Dict[str, Any]:
+    """当前账号的“文件 → 设置”，按用户名隔离，换浏览器也保留。"""
+    return {"settings": user_settings.get(user["username"]), "username": user["username"]}
+
+
+@app.put("/api/settings")
+def put_user_settings(
+    payload: Dict[str, Any], user: Dict[str, Any] = Depends(auth.current_user)
+) -> Dict[str, Any]:
+    raw = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
+    data = user_settings.save(user["username"], raw)
+    return {"settings": data, "username": user["username"]}
 
 
 # ------------------------------------------------------------- project flags

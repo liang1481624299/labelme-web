@@ -14,6 +14,7 @@ labelme-web/
 ├── backend/
 │   ├── app.py            # HTTP API + 静态托管 + 页面路由
 │   ├── auth.py           # 账号库（SQLite）、bcrypt、登录态、/admin 接口
+│   ├── user_settings.py  # 标注页“文件 → 设置”的个人偏好，按账号存 SQLite
 │   ├── workspace.py      # 工程磁盘布局、固定工作空间、老数据迁移
 │   └── requirements.txt
 ├── frontend/
@@ -58,7 +59,7 @@ data/shiroko/电路板A/114.json
 
 - **用户名**来自登录账号：普通账号只能进出自己的目录树，管理员可以指定任意账号
   （`?owner=xxx`）；跨账号访问工程一律按 404 处理，不泄露「这个工程存在」。
-- **工程**是标注的组织单位，用「文件 → 切换工程…」「文件 → 新建工程…」管理；
+- **工程**是标注的组织单位，用「在线 → 切换工程…」「在线 → 新建工程…」管理；
   工程目录缺失时会自动创建。标签集也跟着工程走：`data/<用户名>/<工程>/labels.txt`。
 - 每个工程内部有一个**固定工作空间**（`workspace-xxxxxxxxxxxx`）。前端仍用
   `/api/sessions/{workspace}/...` 这组接口，但目录就是工程根目录，界面上看不到「会话」。
@@ -143,6 +144,8 @@ data/shiroko/电路板A/114.json    ← 该图的标注
 
 - 账号库：`var/labelme-web.db`（SQLite，可用 `LABELME_WEB_DB` 改路径）。放在 `var/` 而不是
   `data/`，因为 `data/` 是标注运行目录、删了会自愈，账号不能跟着一起没。
+- 个人设置：同库的 `user_settings` 表（`username / data JSON / updated_at`），
+  “文件 → 设置”里的主题、自动保存、颜色模式、跨图延续、标签来源等按账号隔离。
 - 密码：**只存 bcrypt 哈希**（`$2b$12$...`，cost 12），库里没有明文，日志也不打密码。
   密码 8 位起，最长 72 字节（bcrypt 上限，超了直接拒绝，不悄悄截断）。
 - 登录态：服务端随机 token，cookie `lmweb_session`（HttpOnly / SameSite=Lax，7 天），
@@ -174,6 +177,15 @@ data/shiroko/电路板A/114.json    ← 该图的标注
   SAM 2 Base+ / SAM 3 / EfficientSAM / SAM 2 / SAM / YOLO-World，可选模型、填推理服务地址、
   API Key 遮罩与超时，带「保存 / 测试当前提供方 / 恢复默认」；OpenAI 兼容接口只预留连接信息，
   暂不参与推理）。
+
+标注页左上角 **文件 → 设置…**（`Ctrl+Shift+,`）与桌面版同构：左侧七个分组（外观与语言、文件与保存、
+绘制与画布、图像之间延续、标签来源、标签行为、AI 辅助），右侧滚动表单，底部可“以文本方式打开配置文件”
+（在新标签页看当前设置 JSON）。主题、自动保存、图像内嵌、标签弹窗、颜色模式、跨图延续、标签来源这些
+改动会立即生效，并写到当前账号的 `user_settings`，换浏览器/换机器重新登录还在；底部会显示“已保存到当前账号”。
+
+顶部菜单按桌面版 7.11 逐项对齐：**文件 / 编辑 / 视图 / 帮助** 四项的条目、顺序、分隔线、快捷键和勾选态
+都与安装版一致，转换能力收在「编辑 → 转换为」子菜单里，不再单独占一个顶栏菜单。登录、工程、标签集导入导出、
+图像标记、刷新列表、管理后台、退出登录这些 Web 独有能力统一放在第五个 **在线** 菜单，不混进文件/编辑菜单。
 
 错误页按真实 HTTP 状态码分流，不再把接口错误伪装成 200：
 
@@ -492,6 +504,8 @@ Web 版结果更贴近原始轮廓，但点数更多。需要完全一致可后�
 | POST | `/api/auth/login` | 登录，成功后下发 `lmweb_session` cookie |
 | POST | `/api/auth/logout` | 退出登录并删掉服务端 token |
 | GET | `/api/auth/me` | 当前账号 `{user:{id,username,role,enabled}}` |
+| GET | `/api/settings` | 当前账号的标注页设置（默认值与已保存值合并） |
+| PUT | `/api/settings` | 保存当前账号设置，body `{"settings":{...}}`；只收已知键，类型/枚举/颜色会校验 |
 | GET | `/api/auth/methods` | 登录方式（`{password:true, ldap:{enabled,label}, sso:{enabled,label}, site_name, upload_max_mb}`），不泄露地址与 client |
 | GET | `/api/auth/sso/start` | 302 到 IdP 授权页；未启用 SSO 时 404 |
 | GET | `/api/auth/sso/callback` | IdP 回调：换 token、验 `id_token`、发本地会话、回 `next`；失败 302 到登录页带 `sso_error` |

@@ -32,6 +32,12 @@ function css(rgb) {
 function rgba(rgb, a) {
   return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
 }
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
+  if (!m) return [128, 128, 128];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
 function dist2(a, b) {
   const dx = a[0] - b[0];
   const dy = a[1] - b[1];
@@ -133,6 +139,7 @@ const state = {
   undoLimit: 20,
   hideShapes: false,
   fillDrawing: true,
+  editShape: true,       // 桌面版 "Edit shapes"：关闭后不响应顶点编辑
   clipboard: null,
   hover: null,
   keepPrev: false,
@@ -152,6 +159,19 @@ const state = {
   saving: false,
   dirty: false,
   search: '',
+  /* 用户设置（/api/settings，按账号存） */
+  theme: 'system',
+  language: 'zh_CN',
+  showLabelDialog: true,
+  shapeColorMode: 'auto',
+  labelInterval: 0,
+  uniformColor: '#d9d9d9',
+  fallbackColor: '#8a8a8a',
+  labelsFromFile: true,
+  labelsFromAnnotation: true,
+  showLabels: true,
+  autoAddLabel: true,
+  aiEnabled: false,
 };
 
 const view = {
@@ -162,7 +182,13 @@ const view = {
 
 const colorCache = new Map();
 function colorForLabel(label) {
-  if (!label) return [160, 160, 160];
+  if (state.shapeColorMode === 'uniform') return hexToRgb(state.uniformColor);
+  if (!label) return hexToRgb(state.fallbackColor);
+  if (state.shapeColorMode === 'label') {
+    const idx = state.labels.indexOf(label);
+    if (idx >= 0) return COLORMAP[idx % COLORMAP.length];
+    return hexToRgb(state.fallbackColor);
+  }
   if (colorCache.has(label)) return colorCache.get(label);
   const idx = colorCache.size % COLORMAP.length;
   const col = COLORMAP[idx];
@@ -374,6 +400,21 @@ function drawShape(shape, index, selected) {
       ctx.fill();
       ctx.stroke();
     });
+  }
+
+  if (state.showLabels && shape.label && pts.length) {
+    const anchor = pts[0];
+    ctx.font = '12px "Segoe UI", "Microsoft YaHei", sans-serif';
+    const text = shape.label;
+    const tw = ctx.measureText(text).width;
+    const gap = 7 + (Number(state.labelInterval) || 0);
+    const x = anchor[0];
+    const y = anchor[1] - gap < 16 ? anchor[1] + gap + 7 : anchor[1] - gap;
+    ctx.fillStyle = 'rgba(0, 0, 0, .72)';
+    ctx.fillRect(x, y - 13, tw + 8, 17);
+    ctx.fillStyle = css(col);
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(text, x + 4, y);
   }
 }
 
@@ -774,7 +815,11 @@ function finishDrawing() {
     addLabel(label);
     setTool('select');
   };
-  askLabel(lastLabel(), finish);
+  if (state.showLabelDialog) {
+    askLabel(lastLabel(), finish);
+  } else {
+    finish(lastLabel() || state.labels[0] || 'object', null);
+  }
 }
 
 function cancelDrawing() {
@@ -805,7 +850,7 @@ function lastLabel() {
 }
 
 function addLabel(label) {
-  if (!label) return;
+  if (!label || !state.autoAddLabel) return;
   if (!state.labels.includes(label)) {
     state.labels.push(label);
     saveLabels();
@@ -842,17 +887,218 @@ async function loadLabels() {
       if (Array.isArray(arr)) state.labels = arr.filter((x) => typeof x === 'string');
     }
   } catch (e) { /* ignore */ }
-  // 服务端为准
-  try {
-    const res = await req('GET', '/api/labels' + projectQuery());
-    if (res && Array.isArray(res.labels)) state.labels = res.labels;
-  } catch (e) { /* 后端没起来时继续用缓存 */ }
+  // 服务端为准（“标签来源 → 从工程 labels.txt 加载”关闭时只用本地缓存）
+  if (state.labelsFromFile) {
+    try {
+      const res = await req('GET', '/api/labels' + projectQuery());
+      if (res && Array.isArray(res.labels)) state.labels = res.labels;
+    } catch (e) { /* 后端没起来时继续用缓存 */ }
+  }
   await loadFlagDefs();
   refreshLabelList();
 }
 
-/** 工程级 flag 定义，存服务端 data/<用户名>/<工程>/flags.txt（每行一个）。 */
-async function loadFlagDefs() {
+/* ------------------------------------------------------- user settings */
+/* 设置按账号存在服务端 /api/settings；这里只做表单绑定与即时应用。 */
+let settingsTimer = null;
+let settingsSyncing = false;
+
+function applyTheme() {
+  const mode = ['system', 'light', 'dark'].includes(state.theme) ? state.theme : 'system';
+  const dark = mode === 'dark'
+    || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+}
+
+function applyUserSettings(data) {
+  const d = data && typeof data === 'object' ? data : {};
+  state.theme = typeof d.theme === 'string' ? d.theme : 'system';
+  state.language = typeof d.language === 'string' ? d.language : 'zh_CN';
+  state.autoSave = d.auto_save !== false;
+  state.embedImage = !!d.store_image_data;
+  state.showLabelDialog = d.show_label_dialog !== false;
+  state.shapeColorMode = ['auto', 'label', 'uniform'].includes(d.shape_color_mode) ? d.shape_color_mode : 'auto';
+  state.labelInterval = Number.isFinite(Number(d.label_interval)) ? clamp(Number(d.label_interval), 0, 100) : 0;
+  state.uniformColor = /^#[0-9a-f]{6}$/i.test(d.uniform_color || '') ? d.uniform_color : '#d9d9d9';
+  state.fallbackColor = /^#[0-9a-f]{6}$/i.test(d.fallback_color || '') ? d.fallback_color : '#8a8a8a';
+  state.keepPrev = !!d.keep_prev;
+  state.keepZoom = !!d.keep_zoom;
+  state.keepBc = !!d.keep_bc;
+  state.labelsFromFile = d.labels_from_file !== false;
+  state.labelsFromAnnotation = d.labels_from_annotation !== false;
+  state.showLabels = d.show_labels !== false;
+  state.autoAddLabel = d.auto_add_label !== false;
+  state.fillDrawing = d.fill_drawing !== false;
+  state.aiEnabled = !!d.ai_enabled;
+  colorCache.clear();
+  applyTheme();
+}
+
+function collectUserSettings() {
+  return {
+    theme: state.theme,
+    language: state.language,
+    auto_save: state.autoSave,
+    store_image_data: state.embedImage,
+    show_label_dialog: state.showLabelDialog,
+    shape_color_mode: state.shapeColorMode,
+    label_interval: Number(state.labelInterval) || 0,
+    uniform_color: state.uniformColor,
+    fallback_color: state.fallbackColor,
+    keep_prev: state.keepPrev,
+    keep_zoom: state.keepZoom,
+    keep_bc: state.keepBc,
+    labels_from_file: state.labelsFromFile,
+    labels_from_annotation: state.labelsFromAnnotation,
+    show_labels: state.showLabels,
+    auto_add_label: state.autoAddLabel,
+    fill_drawing: state.fillDrawing,
+    ai_enabled: state.aiEnabled,
+  };
+}
+
+async function loadUserSettings() {
+  try {
+    const res = await req('GET', '/api/settings');
+    applyUserSettings(res && res.settings);
+  } catch (e) {
+    if (e.status !== 401) toast(`设置读取失败：${e.message}`, true);
+  }
+}
+
+function scheduleSettingsSave() {
+  if (settingsSyncing) return;
+  clearTimeout(settingsTimer);
+  settingsTimer = setTimeout(flushUserSettings, 350);
+  const saved = $('settingsSaved');
+  if (saved) saved.textContent = '正在保存…';
+}
+
+async function flushUserSettings() {
+  clearTimeout(settingsTimer);
+  settingsTimer = null;
+  try {
+    await req('PUT', '/api/settings', { settings: collectUserSettings() });
+    const saved = $('settingsSaved');
+    if (saved) saved.textContent = '已保存到当前账号';
+  } catch (e) {
+    const saved = $('settingsSaved');
+    if (saved) saved.textContent = '保存失败';
+    toast(`设置保存失败：${e.message}`, true);
+  }
+}
+
+function syncSettingsForm() {
+  if (!$('setTheme')) return;
+  settingsSyncing = true;
+  $('setTheme').value = state.theme;
+  $('setLanguage').value = state.language;
+  $('setAutoSave').checked = state.autoSave;
+  $('setStoreImage').checked = state.embedImage;
+  $('setShowLabelDialog').checked = state.showLabelDialog;
+  $('setColorMode').value = state.shapeColorMode;
+  $('setLabelInterval').value = String(state.labelInterval || 0);
+  $('setUniformColor').value = state.uniformColor;
+  $('setFallbackColor').value = state.fallbackColor;
+  $('setKeepPrev').checked = state.keepPrev;
+  $('setKeepZoom').checked = state.keepZoom;
+  $('setKeepBc').checked = state.keepBc;
+  $('setLabelsFromFile').checked = state.labelsFromFile;
+  $('setLabelsFromAnnotation').checked = state.labelsFromAnnotation;
+  $('setShowLabels').checked = state.showLabels;
+  $('setAutoAddLabel').checked = state.autoAddLabel;
+  $('setFillDrawing').checked = state.fillDrawing;
+  $('setAiEnabled').checked = state.aiEnabled;
+  settingsSyncing = false;
+}
+
+function readSettingsForm() {
+  if (!$('setTheme')) return;
+  state.theme = $('setTheme').value;
+  state.language = $('setLanguage').value;
+  state.autoSave = $('setAutoSave').checked;
+  state.embedImage = $('setStoreImage').checked;
+  state.showLabelDialog = $('setShowLabelDialog').checked;
+  state.shapeColorMode = $('setColorMode').value;
+  state.labelInterval = clamp(Number($('setLabelInterval').value) || 0, 0, 100);
+  state.uniformColor = $('setUniformColor').value;
+  state.fallbackColor = $('setFallbackColor').value;
+  state.keepPrev = $('setKeepPrev').checked;
+  state.keepZoom = $('setKeepZoom').checked;
+  state.keepBc = $('setKeepBc').checked;
+  state.labelsFromFile = $('setLabelsFromFile').checked;
+  state.labelsFromAnnotation = $('setLabelsFromAnnotation').checked;
+  state.showLabels = $('setShowLabels').checked;
+  state.autoAddLabel = $('setAutoAddLabel').checked;
+  state.fillDrawing = $('setFillDrawing').checked;
+  state.aiEnabled = $('setAiEnabled').checked;
+  colorCache.clear();
+  applyTheme();
+  if (state.image) redraw();
+}
+
+function openSettings() {
+  const modal = $('settingsModal');
+  if (!modal) return;
+  syncSettingsForm();
+  const saved = $('settingsSaved');
+  if (saved) saved.textContent = '';
+  modal.hidden = false;
+  const content = $('settingsContent');
+  if (content) content.scrollTop = 0;
+  setSettingsNav('settingsAppearance');
+}
+
+function setSettingsNav(target) {
+  document.querySelectorAll('.settings-nav-item').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.target === target);
+  });
+}
+
+function bindSettingsUi() {
+  if (!$('settingsModal')) return;
+  const controls = [
+    'setTheme', 'setLanguage', 'setAutoSave', 'setStoreImage', 'setShowLabelDialog',
+    'setColorMode', 'setLabelInterval', 'setUniformColor', 'setFallbackColor',
+    'setKeepPrev', 'setKeepZoom', 'setKeepBc', 'setLabelsFromFile', 'setLabelsFromAnnotation',
+    'setShowLabels', 'setAutoAddLabel', 'setFillDrawing', 'setAiEnabled',
+  ];
+  controls.forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener('input', () => { readSettingsForm(); scheduleSettingsSave(); });
+    el.addEventListener('change', () => {
+      readSettingsForm();
+      scheduleSettingsSave();
+      if (id === 'setLabelsFromFile' && state.labelsFromFile) loadLabels();
+    });
+  });
+
+  document.querySelectorAll('.settings-nav-item').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setSettingsNav(btn.dataset.target);
+      const section = $(btn.dataset.target);
+      if (section) section.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+  });
+
+  $('btnSettingsClose').addEventListener('click', () => { $('settingsModal').hidden = true; });
+  $('btnSettingsConfig').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(collectUserSettings(), null, 2) + '\n'], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  });
+
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  const onScheme = () => { if (state.theme === 'system') applyTheme(); };
+  if (mq.addEventListener) mq.addEventListener('change', onScheme);
+  else if (mq.addListener) mq.addListener(onScheme);
+}
+
+/** 工程级 flag 定义，存服务端 data/<用户名>/<工程>/flags.txt（每行一个）。 */async function loadFlagDefs() {
   try {
     const res = await req('GET', '/api/flags' + projectQuery());
     if (res && Array.isArray(res.flags)) state.flagDefs = res.flags;
@@ -989,7 +1235,7 @@ canvas.addEventListener('pointerdown', (ev) => {
   }
 
   // select tool
-  if (state.selected >= 0) {
+  if (state.selected >= 0 && state.editShape) {
     const shape = state.shapes[state.selected];
     if (shape.locked) {
       toast('该形状已锁定，按 Ctrl+Shift+L 解锁');
@@ -1512,6 +1758,26 @@ function convertSelectedShape(target) {
     if (['polygon', 'circle', 'oriented_rectangle', 'linestrip'].includes(from)) {
       points = boundingBoxOf(shape);
     }
+  } else if (target === 'oriented_rectangle') {
+    if (['polygon', 'rectangle', 'circle', 'linestrip'].includes(from)) {
+      const [[x0, y0], [x1, y1]] = boundingBoxOf(shape);
+      points = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    }
+  } else if (target === 'circle') {
+    if (['polygon', 'rectangle', 'oriented_rectangle', 'linestrip'].includes(from)) {
+      const [[x0, y0], [x1, y1]] = boundingBoxOf(shape);
+      const cx = (x0 + x1) / 2;
+      const cy = (y0 + y1) / 2;
+      const r = Math.max(x1 - x0, y1 - y0) / 2;
+      points = [[cx, cy], [cx + r, cy]];
+    }
+  } else if (target === 'point') {
+    if (from !== 'mask' && Array.isArray(shape.points) && shape.points.length) {
+      const n = shape.points.length;
+      const cx = shape.points.reduce((s, p) => s + p[0], 0) / n;
+      const cy = shape.points.reduce((s, p) => s + p[1], 0) / n;
+      points = [[cx, cy]];
+    }
   } else if (target === 'linestrip') {
     if (['polygon', 'line', 'oriented_rectangle'].includes(from)) {
       points = shape.points.map((p) => [p[0], p[1]]);
@@ -1983,10 +2249,42 @@ function closeLabelDialog(value) {
 }
 
 async function refreshDocks() {
+  refreshFlagList();
   refreshLabelList();
   refreshShapeList();
   refreshImageList();
   updateStatus();
+}
+
+function refreshFlagList() {
+  const box = $('flagList');
+  if (!box) return;
+  mergeUsedFlags();
+  if (!state.flagDefs.length) {
+    box.innerHTML = '<div class="empty-list">暂无标志</div>';
+    return;
+  }
+  box.innerHTML = '';
+  state.flagDefs.forEach((name) => {
+    const row = document.createElement('div');
+    row.className = 'row flag-row' + (state.flags[name] ? ' selected' : '');
+    row.innerHTML = '<span class="flag-mark"></span><span class="name"></span>';
+    row.querySelector('.flag-mark').textContent = state.flags[name] ? '✓' : '';
+    row.querySelector('.name').textContent = name;
+    row.addEventListener('click', () => {
+      if (!state.image) {
+        toast('先打开一张图像');
+        return;
+      }
+      if (state.flags[name]) delete state.flags[name];
+      else state.flags[name] = true;
+      state.dirty = true;
+      scheduleDraft();
+      scheduleSave();
+      refreshFlagList();
+    });
+    box.appendChild(row);
+  });
 }
 
 function refreshLabelList() {
@@ -2590,7 +2888,7 @@ async function openImage(name, carryShapes = null, keepView = null) {
     Object.keys(ann || {}).forEach((k) => {
       if (!known.has(k)) state.extra[k] = ann[k];
     });
-    state.shapes.forEach((s) => addLabel(s.label));
+    if (state.labelsFromAnnotation) state.shapes.forEach((s) => addLabel(s.label));
   } catch (e) {
     if (e.status === 404) {
       state.shapes = [];
@@ -2815,141 +3113,247 @@ const ICONS = {
   fit: '<svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
 };
 
-/* ------------------------------------------------------------------ menus */
+/* ------------------------------------------------------------------ menus
+   文件 / 编辑 / 视图 / 帮助 四项与桌面版 labelme 7.11 逐项同构（含顺序、
+   分隔线、快捷键和勾选态）；Web 独有的工程、协作、账号等能力集中到「在线」，
+   不再混进桌面版菜单。 */
+function menuLabel(text) {
+  return String(text || '').replace(/&/g, '');
+}
+
+function dockShown(id) {
+  const el = $(id);
+  return !!(el && !el.hidden);
+}
+
+function selectedShapeType() {
+  if (state.selected < 0 || !state.shapes[state.selected]) return null;
+  return state.shapes[state.selected].shape_type;
+}
+
+function isAdminUser() {
+  return !!(state.user && state.user.role === 'admin');
+}
+
 const MENUS = [
   {
-    name: '文件',
+    name: '文件(&F)',
     items: [
-      { id: 'openFile', label: '打开文件(O)…', sc: 'Ctrl+O' },
-      { id: 'upload', label: '打开文件夹…', sc: 'Ctrl+Shift+O' },
+      { id: 'openFile', label: '打开文件(&O)…', sc: 'Ctrl+O' },
+      { id: 'upload', label: '打开文件夹…', sc: 'Ctrl+U' },
+      { sep: true },
+      { id: 'prev', label: '上一张图像(&P)', sc: 'A' },
+      { id: 'next', label: '下一张图像(&N)', sc: 'D' },
+      { sep: true },
+      { id: 'save', label: '保存(&S)', sc: 'Ctrl+S' },
+      { id: 'saveAs', label: '另存为(&A)…', sc: 'Ctrl+Shift+S' },
+      { id: 'autoSave', label: '自动保存(&T)', checkable: true, checked: () => state.autoSave },
+      { id: 'changeOutputDir', label: '更改标注文件夹(&F)…' },
+      { id: 'embedImage', label: '将图像嵌入标注文件', checkable: true, checked: () => state.embedImage },
+      { sep: true },
+      { id: 'closeImage', label: '关闭(&C)', sc: 'Ctrl+W' },
+      { id: 'deleteAnnotation', label: '删除标注文件(&D)', sc: 'Ctrl+Del' },
+      { sep: true },
+      { id: 'settings', label: '设置…', sc: 'Ctrl+Shift+,' },
+      { id: 'aiModels', label: 'AI 模型…' },
+      { sep: true },
+      { id: 'quit', label: '退出(&Q)', sc: 'Ctrl+Q' },
+    ],
+  },
+  {
+    name: '编辑(&E)',
+    items: [
+      { id: 'toolPolygon', label: '多边形', sc: 'Ctrl+N', checkable: true, checked: () => state.tool === 'polygon' },
+      { id: 'toolRectangle', label: '矩形', sc: 'Ctrl+R', checkable: true, checked: () => state.tool === 'rectangle' },
+      { id: 'toolOrientedRectangle', label: '有向矩形', checkable: true, checked: () => state.tool === 'oriented_rectangle' },
+      { id: 'toolCircle', label: '圆形', checkable: true, checked: () => state.tool === 'circle' },
+      { id: 'toolCircle3', label: '三点画圆', checkable: true, checked: () => state.tool === 'circle3' },
+      { id: 'toolPoint', label: '点', checkable: true, checked: () => state.tool === 'point' },
+      { id: 'toolLine', label: '直线', checkable: true, checked: () => state.tool === 'line' },
+      { id: 'toolLinestrip', label: '折线', checkable: true, checked: () => state.tool === 'linestrip' },
+      { id: 'toolAiSegment', label: 'AI-Segment', disabled: true },
+      { id: 'toolAiFindAll', label: 'AI-Find All', disabled: true },
+      { id: 'editShape', label: '编辑形状', sc: 'Ctrl+J', checkable: true, checked: () => state.editShape },
+      { sep: true },
+      { id: 'undo', label: '撤销', sc: 'Ctrl+Z' },
+      { id: 'undoLastPoint', label: '撤销上一个点', sc: 'Ctrl+Z' },
+      { sep: true },
+      { id: 'copyShape', label: '复制到剪贴板', sc: 'Ctrl+C' },
+      { id: 'pasteShape', label: '从剪贴板粘贴', sc: 'Ctrl+V' },
+      { id: 'duplicateShape', label: '复制形状', sc: 'Ctrl+D' },
+      { sep: true },
+      { id: 'editShapeLabel', label: '编辑标签(&E)…', sc: 'Ctrl+E' },
+      { id: 'deleteShape', label: '删除形状', sc: 'Del' },
+      { id: 'mergeShapes', label: '合并形状' },
+      {
+        id: 'convert',
+        label: '转换为',
+        children: [
+          { id: 'convertPolygon', label: '多边形', checkable: true, checked: () => selectedShapeType() === 'polygon', disabled: () => state.selected < 0 },
+          { id: 'convertRectangle', label: '矩形', checkable: true, checked: () => selectedShapeType() === 'rectangle', disabled: () => state.selected < 0 },
+          { id: 'convertOrientedRectangle', label: '有向矩形', checkable: true, checked: () => selectedShapeType() === 'oriented_rectangle', disabled: () => state.selected < 0 },
+          { id: 'convertCircle', label: '圆形', checkable: true, checked: () => selectedShapeType() === 'circle', disabled: () => state.selected < 0 },
+          { id: 'convertLine', label: '直线', checkable: true, checked: () => selectedShapeType() === 'line', disabled: () => state.selected < 0 },
+          { id: 'convertPoint', label: '点', checkable: true, checked: () => selectedShapeType() === 'point', disabled: () => state.selected < 0 },
+          { id: 'convertLinestrip', label: '折线', checkable: true, checked: () => selectedShapeType() === 'linestrip', disabled: () => state.selected < 0 },
+          { id: 'convertMask', label: '掩码', checkable: true, checked: () => selectedShapeType() === 'mask', disabled: () => state.selected < 0 },
+        ],
+      },
+      { id: 'lockShape', label: '锁定形状', sc: 'Ctrl+Shift+L' },
+      { id: 'deletePoint', label: '删除选中的点', sc: 'Meta+H' },
+      { sep: true },
+      { id: 'selectUp', label: '选择上方形状', sc: 'Ctrl+Up' },
+      { id: 'selectDown', label: '选择下方形状', sc: 'Ctrl+Down' },
+      { id: 'selectLeft', label: '选择左侧形状', sc: 'Ctrl+Left' },
+      { id: 'selectRight', label: '选择右侧形状', sc: 'Ctrl+Right' },
+      { sep: true },
+      { id: 'keepPrev', label: '保留上一张标注', checkable: true, checked: () => state.keepPrev },
+    ],
+  },
+  {
+    name: '视图(&V)',
+    items: [
+      { id: 'flagsDock', label: '标志', checkable: true, checked: () => dockShown('dockFlags') },
+      { id: 'labelDock', label: '标签列表', checkable: true, checked: () => dockShown('dockLabels') },
+      { id: 'shapeDock', label: '形状列表', checkable: true, checked: () => dockShown('dockShapes') },
+      { id: 'fileDock', label: '图像列表', checkable: true, checked: () => dockShown('dockImages') },
+      { sep: true },
+      { id: 'resetLayout', label: '重置布局' },
+      { sep: true },
+      { id: 'fillDrawing', label: '填充正在绘制的多边形', checkable: true, checked: () => state.fillDrawing },
+      { sep: true },
+      { id: 'hideShapes', label: '隐藏形状(&H)' },
+      { id: 'showShapes', label: '显示形状(&S)' },
+      { id: 'toggleShapes', label: '切换形状显示(&T)', sc: 'T' },
+      { sep: true },
+      { id: 'zoomIn', label: '放大(&I)', sc: 'Ctrl++' },
+      { id: 'zoomOut', label: '缩小(&Z)', sc: 'Ctrl+-' },
+      { id: 'zoom100', label: '实际大小(&A)', sc: 'Ctrl+0' },
+      { id: 'keepZoom', label: '保留上一次的缩放(&K)', checkable: true, checked: () => state.keepZoom },
+      { sep: true },
+      { id: 'fit', label: '适合窗口(&W)', sc: 'Ctrl+F', checkable: true, checked: () => true },
+      { id: 'fitSelection', label: '适合选区(&E)', sc: 'Ctrl+Shift+F' },
+      { sep: true },
+      { id: 'bc', label: '亮度/对比度(&B)…' },
+      { id: 'keepBc', label: '保留上一次的亮度/对比度', checkable: true, checked: () => state.keepBc },
+      { sep: true },
+    ],
+  },
+  {
+    name: '帮助(&H)',
+    items: [
+      { id: 'tutorial', label: '教程(&T)' },
+      { id: 'about', label: '关于 Labelme(&A)' },
+    ],
+  },
+  {
+    name: '在线',
+    items: [
       { id: 'projects', label: '切换工程…' },
       { id: 'newProject', label: '新建工程…' },
       { sep: true },
-      { id: 'save', label: '保存(S)', sc: 'Ctrl+S' },
-      { id: 'saveAs', label: '另存为 JSON…', sc: 'Ctrl+Shift+S' },
-      { id: 'autoSave', label: '自动保存（停手 0.8s 落盘）' },
-      { id: 'embedImage', label: '把图像数据内嵌到 JSON（imageData）' },
-      { id: 'exportLabels', label: '导出标签集（labels.txt）…' },
       { id: 'importLabels', label: '导入标签集（labels.txt）…' },
+      { id: 'exportLabels', label: '导出标签集（labels.txt）…' },
       { sep: true },
       { id: 'imgFlags', label: '编辑图像标记（image flags）…' },
+      { id: 'reload', label: '刷新图像列表' },
       { sep: true },
-      { id: 'closeImage', label: '关闭当前图像', sc: 'Ctrl+W' },
-      { id: 'deleteAnnotation', label: '删除标注文件…' },
+      { id: 'redo', label: '重做', sc: 'Ctrl+Y' },
+      { id: 'undoDepth', label: '撤销步数…' },
+      { sep: true },
+      { id: 'crosshair', label: '显示十字准星', checkable: true, checked: () => state.crosshair },
+      { id: 'allowOob', label: '允许点在图像外（不裁剪）', checkable: true, checked: () => state.allowOob },
+      { sep: true },
       { id: 'deleteImage', label: '删除当前图像…' },
+      { sep: true },
+      { id: 'toggleDocks', label: '显示 / 隐藏侧边面板', checkable: true, checked: () => !document.body.classList.contains('docks-hidden') },
+      { id: 'admin', label: '管理后台' },
       { sep: true },
       { id: 'logout', label: '退出登录' },
     ],
   },
-  {
-    name: '编辑',
-    items: [
-      { id: 'undo', label: '撤销', sc: 'Ctrl+Z' },
-      { id: 'redo', label: '重做', sc: 'Ctrl+Y' },
-      { id: 'undoLastPoint', label: '撤销上一个点', sc: '绘图时 Ctrl+Z' },
-      { sep: true },
-      { id: 'copyShape', label: '复制到剪贴板', sc: 'Ctrl+C' },
-      { id: 'pasteShape', label: '从剪贴板粘贴', sc: 'Ctrl+V' },
-      { id: 'duplicateShape', label: '复制形状（副本）', sc: 'Ctrl+D' },
-      { id: 'deleteShape', label: '删除形状', sc: 'Delete' },
-      { sep: true },
-      { id: 'deletePoint', label: '删除选中顶点', sc: 'Backspace' },
-      { id: 'addPoint', label: '在边上加点' },
-      { id: 'lockShape', label: '锁定 / 解锁形状', sc: 'Ctrl+Shift+L' },
-      { id: 'undoDepth', label: '撤销步数…' },
-      { sep: true },
-      { id: 'hideShapes', label: '隐藏全部形状' },
-      { id: 'showShapes', label: '显示全部形状' },
-      { id: 'toggleShapes', label: '切换形状显示', sc: 'T' },
-      { sep: true },
-      { id: 'selectUp', label: '选中上方形状', sc: 'Ctrl+↑' },
-      { id: 'selectDown', label: '选中下方形状', sc: 'Ctrl+↓' },
-      { id: 'selectLeft', label: '选中左侧形状', sc: 'Ctrl+←' },
-      { id: 'selectRight', label: '选中右侧形状', sc: 'Ctrl+→' },
-      { sep: true },
-      { id: 'editShapeLabel', label: '修改选中形状标签…' },
-      { id: 'editLabels', label: '编辑标签集…' },
-    ],
-  },
-  {
-    name: '转换',
-    items: [
-      { id: 'convertPolygon', label: '转换为多边形' },
-      { id: 'convertRectangle', label: '转换为矩形（外接框）' },
-      { id: 'convertLinestrip', label: '转换为折线' },
-      { id: 'convertLine', label: '转换为直线' },
-      { id: 'mergeShapes', label: '合并所选形状（多选后）' },
-      { id: 'convertMask', label: '转换为掩码（二值图）' },
-    ],
-  },
-  {
-    name: '视图',
-    items: [
-      { id: 'fit', label: '适合窗口', sc: 'Ctrl+F' },
-      { id: 'fitSelection', label: '适合选中形状', sc: 'Ctrl+Shift+F' },
-      { id: 'zoom100', label: '原始大小', sc: 'Ctrl+0' },
-      { id: 'zoomIn', label: '放大', sc: 'Ctrl++' },
-      { id: 'zoomOut', label: '缩小', sc: 'Ctrl+-' },
-      { sep: true },
-      { id: 'bc', label: '亮度 / 对比度…' },
-      { id: 'keepBc', label: '保留上一张亮度/对比度（切换图像时）' },
-      { id: 'fillDrawing', label: '绘制时填充多边形' },
-      { id: 'crosshair', label: '显示十字准星' },
-      { id: 'allowOob', label: '允许点在图像外（不裁剪）' },
-      { id: 'keepPrev', label: '保留上一张标注（切换图像时）' },
-      { id: 'keepZoom', label: '保留上一张缩放（切换图像时）' },
-      { id: 'reload', label: '刷新图像列表' },
-      { sep: true },
-      { id: 'toggleDocks', label: '显示 / 隐藏侧边面板' },
-      { id: 'resetLayout', label: '重置面板布局' },
-    ],
-  },
-  {
-    name: '帮助',
-    items: [
-      { id: 'help', label: '快捷键与关于' },
-    ],
-  },
 ];
+
+function buildMenuItems(list, items) {
+  items.forEach((item) => {
+    if (item.sep) {
+      const s = document.createElement('div');
+      s.className = 'menu-sep';
+      list.appendChild(s);
+      return;
+    }
+    const row = document.createElement('div');
+    row.className = 'menu-item' + (item.children ? ' has-sub' : '');
+    row._checkFn = item.checkable ? item.checked : null;
+    row._disabledFn = typeof item.disabled === 'function' ? item.disabled : (() => !!item.disabled);
+
+    const check = document.createElement('span');
+    check.className = 'menu-check';
+    row.appendChild(check);
+
+    const label = document.createElement('span');
+    label.className = 'menu-label';
+    label.textContent = menuLabel(item.label);
+    row.appendChild(label);
+
+    if (item.children) {
+      const arrow = document.createElement('span');
+      arrow.className = 'menu-arrow';
+      arrow.textContent = '›';
+      row.appendChild(arrow);
+
+      const sub = document.createElement('div');
+      sub.className = 'menu-sub';
+      buildMenuItems(sub, item.children);
+      row.appendChild(sub);
+
+      row.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        refreshMenuState(list);
+      });
+    } else {
+      const sc = document.createElement('span');
+      sc.className = 'sc';
+      sc.textContent = item.sc || '';
+      row.appendChild(sc);
+      row.addEventListener('click', () => {
+        if (row.classList.contains('disabled')) return;
+        hideMenus();
+        runAction(item.id);
+      });
+    }
+
+    list.appendChild(row);
+  });
+}
+
+function refreshMenuState(list) {
+  list.querySelectorAll('.menu-item').forEach((row) => {
+    const check = row.querySelector('.menu-check');
+    if (check && row._checkFn) check.textContent = row._checkFn() ? '✓' : '';
+    if (row._disabledFn) row.classList.toggle('disabled', !!row._disabledFn());
+    const sub = row.querySelector('.menu-sub');
+    if (sub) refreshMenuState(sub);
+  });
+}
 
 function buildMenubar() {
   const bar = $('menubar');
   MENUS.forEach((menu) => {
     const btn = document.createElement('button');
     btn.className = 'menu-btn';
-    btn.textContent = menu.name;
+    btn.textContent = menuLabel(menu.name);
 
     const list = document.createElement('div');
     list.className = 'menu-list';
-
-    menu.items.forEach((item) => {
-      if (item.sep) {
-        const s = document.createElement('div');
-        s.className = 'menu-sep';
-        list.appendChild(s);
-        return;
-      }
-      const row = document.createElement('div');
-      row.className = 'menu-item';
-      const label = document.createElement('span');
-      label.textContent = item.label;
-      const sc = document.createElement('span');
-      sc.className = 'sc';
-      sc.textContent = item.sc || '';
-      row.appendChild(label);
-      row.appendChild(sc);
-      row.addEventListener('click', () => {
-        hideMenus();
-        runAction(item.id);
-      });
-      list.appendChild(row);
-    });
+    buildMenuItems(list, menu.items);
 
     btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       const open = list.classList.contains('show');
       hideMenus();
       if (!open) {
+        refreshMenuState(list);
         const rect = btn.getBoundingClientRect();
         list.style.left = `${rect.left}px`;
         list.classList.add('show');
@@ -2968,6 +3372,14 @@ function hideMenus() {
   document.querySelectorAll('.menu-list').forEach((el) => el.classList.remove('show'));
   document.querySelectorAll('.menu-btn').forEach((el) => el.classList.remove('open'));
 }
+
+function setDockVisible(id, visible) {
+  const el = $(id);
+  if (!el) return;
+  el.hidden = !visible;
+  redraw();
+}
+
 
 /* ---------------------------------------------------------------- toolbar */
 const TOOLBAR = [
@@ -3104,6 +3516,15 @@ function runAction(id) {
         if (input) input.focus();
       }, 30);
       break;
+    case 'changeOutputDir':
+      openProjectModal();
+      break;
+    case 'quit':
+      quitApp();
+      break;
+    case 'aiModels':
+      openAiModels();
+      break;
     case 'save':
       saveNow(false);
       break;
@@ -3121,6 +3542,40 @@ function runAction(id) {
       break;
     case 'logout':
       logoutUser();
+      break;
+    case 'toolPolygon':
+      setTool('polygon');
+      break;
+    case 'toolRectangle':
+      setTool('rectangle');
+      break;
+    case 'toolOrientedRectangle':
+      setTool('oriented_rectangle');
+      break;
+    case 'toolCircle':
+      setTool('circle');
+      break;
+    case 'toolCircle3':
+      setTool('circle3');
+      break;
+    case 'toolPoint':
+      setTool('point');
+      break;
+    case 'toolLine':
+      setTool('line');
+      break;
+    case 'toolLinestrip':
+      setTool('linestrip');
+      break;
+    case 'toolAiSegment':
+      setTool('ai-segment');
+      break;
+    case 'toolAiFindAll':
+      setTool('ai-findall');
+      break;
+    case 'editShape':
+      state.editShape = !state.editShape;
+      toast(state.editShape ? '可以编辑形状顶点' : '已关闭形状顶点编辑');
       break;
     case 'undo':
       undo();
@@ -3181,6 +3636,15 @@ function runAction(id) {
     case 'convertRectangle':
       convertSelectedShape('rectangle');
       break;
+    case 'convertOrientedRectangle':
+      convertSelectedShape('oriented_rectangle');
+      break;
+    case 'convertCircle':
+      convertSelectedShape('circle');
+      break;
+    case 'convertPoint':
+      convertSelectedShape('point');
+      break;
     case 'convertLinestrip':
       convertSelectedShape('linestrip');
       break;
@@ -3200,6 +3664,7 @@ function runAction(id) {
       state.fillDrawing = !state.fillDrawing;
       redraw();
       toast(state.fillDrawing ? '绘制时填充已开启' : '绘制时填充已关闭');
+      scheduleSettingsSave();
       break;
     case 'crosshair':
       state.crosshair = !state.crosshair;
@@ -3213,10 +3678,12 @@ function runAction(id) {
     case 'keepPrev':
       state.keepPrev = !state.keepPrev;
       toast(state.keepPrev ? '切换图像时保留上一张标注' : '已关闭保留上一张标注');
+      scheduleSettingsSave();
       break;
     case 'keepZoom':
       state.keepZoom = !state.keepZoom;
       toast(state.keepZoom ? '切换图像时保留缩放' : '已关闭保留缩放');
+      scheduleSettingsSave();
       break;
     case 'editShapeLabel':
       editSelectedLabel();
@@ -3248,14 +3715,17 @@ function runAction(id) {
     case 'keepBc':
       state.keepBc = !state.keepBc;
       toast(state.keepBc ? '切换图像时保留亮度/对比度' : '已关闭保留亮度/对比度');
+      scheduleSettingsSave();
       break;
     case 'autoSave':
       state.autoSave = !state.autoSave;
       toast(state.autoSave ? '自动保存已开启' : '自动保存已关闭，请用 Ctrl+S 手动保存');
+      scheduleSettingsSave();
       break;
     case 'embedImage':
       state.embedImage = !state.embedImage;
       toast(state.embedImage ? '保存时会把图像数据写进 JSON（文件会明显变大）' : '已关闭图像内嵌，JSON 只记路径');
+      scheduleSettingsSave();
       break;
     case 'exportLabels':
       exportLabelsFile();
@@ -3263,12 +3733,28 @@ function runAction(id) {
     case 'importLabels':
       importLabelsFile();
       break;
+    case 'flagsDock':
+      setDockVisible('dockFlags', !dockShown('dockFlags'));
+      break;
+    case 'labelDock':
+      setDockVisible('dockLabels', !dockShown('dockLabels'));
+      break;
+    case 'shapeDock':
+      setDockVisible('dockShapes', !dockShown('dockShapes'));
+      break;
+    case 'fileDock':
+      setDockVisible('dockImages', !dockShown('dockImages'));
+      break;
     case 'toggleDocks':
       document.body.classList.toggle('docks-hidden');
       redraw();
       break;
     case 'resetLayout':
       document.body.classList.remove('docks-hidden');
+      ['dockFlags', 'dockLabels', 'dockShapes', 'dockImages'].forEach((id) => {
+        const el = $(id);
+        if (el) el.hidden = false;
+      });
       redraw();
       toast('已恢复默认面板布局');
       break;
@@ -3282,11 +3768,38 @@ function runAction(id) {
       reloadImages();
       break;
     case 'help':
+    case 'about':
       $('helpModal').hidden = false;
+      break;
+    case 'tutorial':
+      window.open('https://github.com/wkentaro/labelme/tree/main/tutorial', '_blank', 'noopener');
+      break;
+    case 'admin':
+      if (!isAdminUser()) {
+        toast('当前账号不是管理员，无法进入管理后台', true);
+        break;
+      }
+      window.open('/admin', '_blank', 'noopener');
+      break;
+    case 'settings':
+      openSettings();
       break;
     default:
       break;
   }
+}
+
+function quitApp() {
+  if (!window.confirm('退出 Labelme Web？未保存的改动会先自动保存。')) return;
+  logoutUser();
+}
+
+function openAiModels() {
+  if (!isAdminUser()) {
+    toast('AI 模型由管理员在管理后台配置', true);
+    return;
+  }
+  window.open('/admin', '_blank', 'noopener');
 }
 
 function pickFiles(directory) {
@@ -3392,6 +3905,22 @@ document.addEventListener('keydown', (ev) => {
 
   if (ctrl) {
     switch (key.toLowerCase()) {
+      case ',':
+        ev.preventDefault();
+        openSettings();
+        return;
+      case 'j':
+        ev.preventDefault();
+        runAction('editShape');
+        return;
+      case 'q':
+        ev.preventDefault();
+        quitApp();
+        return;
+      case 'h':
+        ev.preventDefault();
+        deleteSelectedPoint();
+        return;
       case 'o':
         ev.preventDefault();
         pickFiles(false);
@@ -3647,6 +4176,7 @@ function bindUi() {
   });
 
   $('btnEditLabels').addEventListener('click', openLabelManage);
+  $('btnEditImgFlags').addEventListener('click', openImageFlagsModal);
   $('newLabelInput').addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') $('btnAddLabel').click();
   });
@@ -3756,6 +4286,7 @@ async function boot() {
   } catch (e) {
     if (e.status === 401) return; // 正在跳登录页
   }
+  await loadUserSettings();
   try {
     await initProjects();
   } catch (e) {
@@ -3766,6 +4297,7 @@ async function boot() {
   buildToolbar();
   buildToolstrip();
   bindUi();
+  bindSettingsUi();
   setTool('select');
   showEmpty(true);
   initLiveChannel();
