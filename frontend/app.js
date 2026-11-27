@@ -3119,7 +3119,11 @@ function openProjectModal() {
       box.appendChild(row);
     });
   }).catch((e) => {
-    box.innerHTML = `<div class="empty-list">${e.message}</div>`;
+    box.innerHTML = '';
+    const hint = document.createElement('div');
+    hint.className = 'empty-list';
+    hint.textContent = e.message;
+    box.appendChild(hint);
   });
   const input = $('newProjectName');
   if (input) input.value = '';
