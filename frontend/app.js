@@ -797,7 +797,7 @@ function dropDuplicateTail(d) {
   if (!d || d.points.length < 2) return;
   const last = d.points[d.points.length - 1];
   const prev = d.points[d.points.length - 2];
-  if (dist2(last, prev) <= Math.pow(4 / view.zoom, 2)) d.points.pop();
+  if (dist2(last, prev) <= 4 / view.zoom) d.points.pop();
 }
 
 function finishDrawing() {
@@ -1621,8 +1621,10 @@ canvas.addEventListener('pointerdown', (ev) => {
   pt.y = cy;
 
   if (isDrawingTool()) {
-    // 双击结束：第二次 pointerdown 不再补点，直接用已有点位闭合
-    if (ev.detail >= 2 && state.drawing && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
+    // 双击结束只用于折线/有向矩形/三点画圆。多边形必须点回起点、按
+    // Enter/Space 或右键结束；否则连续快速点几个顶点会被浏览器的
+    // click detail 当成双击，画到第 4 个点就提前收尾。
+    if (ev.detail >= 2 && state.drawing && ['linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
       dropDuplicateTail(state.drawing);
       finishDrawing();
       return;
@@ -1774,7 +1776,13 @@ canvas.addEventListener('dblclick', (ev) => {
   ev.preventDefault();
   // 触屏结束多边形只走“完成”按钮或点回起点；忽略双击合成出的 dblclick
   if (touchUi && Date.now() - touchState.lastTouchEnd < 600) return;
-  if (state.drawing && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
+  if (state.drawing && state.drawing.type === 'polygon') {
+    // 多边形双击只清掉第二次点击留下的重复末点，不结束形状。
+    dropDuplicateTail(state.drawing);
+    redraw();
+    return;
+  }
+  if (state.drawing && ['linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
     const d = state.drawing;
     // 双击的两次 pointerdown 可能各补了一个点；末尾重复点只保留一个
     dropDuplicateTail(d);
@@ -1847,7 +1855,7 @@ function handleDrawClick(tool, pt, ev) {
   if (tool === 'polygon') {
     // 回到起点即闭合（桌面 labelme 的默认手势），不再重复添加起点
     if (d.points.length >= 3 && d.points[0]
-      && dist2(d.points[0], [pt.x, pt.y]) <= Math.pow((touchUi ? 22 : 8) / view.zoom, 2)) {
+      && dist2(d.points[0], [pt.x, pt.y]) <= (touchUi ? 22 : 8) / view.zoom) {
       finishDrawing();
       return;
     }
