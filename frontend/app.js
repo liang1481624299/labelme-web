@@ -50,6 +50,16 @@ function round2(v) {
   return Math.round(v * 100) / 100;
 }
 
+/* 触屏设备：iPad / 触屏 Windows。控件会放大，命中容差也按手指宽度放宽。 */
+const TOUCH_QUERY = window.matchMedia ? window.matchMedia('(any-pointer: coarse)') : null;
+let touchUi = !!(TOUCH_QUERY && TOUCH_QUERY.matches) || (navigator.maxTouchPoints || 0) > 0;
+if (TOUCH_QUERY && TOUCH_QUERY.addEventListener) {
+  TOUCH_QUERY.addEventListener('change', (ev) => { touchUi = ev.matches || (navigator.maxTouchPoints || 0) > 0; });
+}
+function hitSlopPx(px) {
+  return (touchUi ? Math.max(px, 15) : px) / view.zoom;
+}
+
 const HTTP_STATUS_TEXT = {
   400: '请求有误，请检查提交内容',
   401: '登录已过期，请重新登录',
@@ -317,6 +327,7 @@ function sizeCanvas() {
 }
 
 function redraw() {
+  toggleTouchActions();
   sizeCanvas();
   const dpr = window.devicePixelRatio || 1;
   const w = wrap.clientWidth;
@@ -559,12 +570,12 @@ function distToSegment(p, a, b) {
 }
 
 function shapeHit(shape, pt) {
-  const tol = 5 / view.zoom;
+  const tol = hitSlopPx(5);
   const pts = shape.points;
   if (!pts.length) return false;
 
   if (shape.shape_type === 'point' || shape.shape_type === 'points') {
-    return pts.some((p) => dist2(p, pt) <= 6 / view.zoom);
+    return pts.some((p) => dist2(p, pt) <= hitSlopPx(6));
   }
   if (shape.shape_type === 'circle') {
     const c = pts[0], e = pts[1] || pts[0];
@@ -611,7 +622,7 @@ function hitTestShape(pt) {
 }
 
 function hitTestVertex(shape, pt) {
-  const tol = 7 / view.zoom;
+  const tol = hitSlopPx(7);
   const p = Array.isArray(pt) ? pt : [pt.x, pt.y];
   let best = -1;
   let bestD = tol;
@@ -837,6 +848,7 @@ function finishDrawing() {
   }
 
   state.drawing = null;
+  toggleTouchActions();
   const finish = (label, meta) => {
     if (label === null) {
       redraw();
@@ -868,6 +880,7 @@ function finishDrawing() {
 function cancelDrawing() {
   if (!state.drawing) return false;
   state.drawing = null;
+  touchState.lastTap = 0;
   redraw();
   return true;
 }
@@ -1252,9 +1265,371 @@ function isDrawingTool() {
   return ['polygon', 'rectangle', 'oriented_rectangle', 'circle', 'circle3', 'point', 'line', 'linestrip'].includes(state.tool);
 }
 
+/* ---------------------------------------------------------- touch gestures
+ * 触屏与鼠标共用画布，但交互分开处理：
+ *  - 单指：当前工具标注 / 选中形状拖动 / 空白处平移
+ *  - 双指：以两指中点缩放并平移，不会在画布上补点
+ *  - 多边形等点式工具：单击加点，双击或浮动“完成”按钮结束
+ *  - 触屏的 pointerdown 不立即落点，避免双指手势误加一个点
+ */
+const touchState = {
+  pointers: new Map(),
+  gesture: null,
+  pan: null,
+  single: null,
+  suppress: false,
+  suppressTap: false,
+  lastTap: 0,
+  lastTapX: 0,
+  lastTapY: 0,
+  hintShown: false,
+};
+
+function isTouchPointer(ev) {
+  return ev.pointerType === 'touch' || ev.pointerType === 'pen';
+}
+
+function touchPoint(ev) {
+  return { x: ev.clientX, y: ev.clientY };
+}
+
+function toggleTouchActions() {
+  const bar = $('touchActions');
+  if (!bar) return;
+  const show = !!(touchUi && state.image && state.drawing);
+  if (bar.hidden !== !show) bar.hidden = !show;
+  if (show) {
+    const d = state.drawing;
+    $('btnTouchFinish').disabled = !(d && d.points.length);
+    $('btnTouchUndoPoint').disabled = !(d && d.points.length);
+  }
+}
+
+function updateTouchDrag(pt) {
+  const drag = state.drag;
+  if (!drag || drag.index < 0) return;
+  const shape = state.shapes[drag.index];
+  if (!shape) return;
+  if (drag.mode === 'move') {
+    const dx = pt.x - drag.start.x;
+    const dy = pt.y - drag.start.y;
+    shape.points = drag.shape.points.map((p) => [p[0] + dx, p[1] + dy]);
+  } else if (drag.mode === 'vertex') {
+    const pts = drag.shape.points.map((p) => [p[0], p[1]]);
+    pts[drag.vertex] = [pt.x, pt.y];
+    shape.points = pts;
+  }
+  redraw();
+}
+
+function beginTouchSelect(ev) {
+  const raw = clientToImage(ev.clientX, ev.clientY);
+  const [cx, cy] = clampPointToImage(raw.x, raw.y);
+  const pt = { x: cx, y: cy };
+  let vertex = -1;
+  let hit = -1;
+
+  // 先看当前选中形状的顶点，手指点顶点比点形状本身更优先
+  if (state.selected >= 0 && state.editShape) {
+    const selected = state.shapes[state.selected];
+    if (selected && !selected.locked) vertex = hitTestVertex(selected, pt);
+    if (vertex >= 0) hit = state.selected;
+  }
+  if (hit < 0 && !state.hideShapes) hit = hitTestShape(pt);
+
+  if (hit >= 0) {
+    state.selected = hit;
+    state.selectedSet = [hit];
+    state.selectedVertex = vertex;
+  } else {
+    state.selected = -1;
+    state.selectedSet = [];
+    state.selectedVertex = -1;
+  }
+  refreshDocks();
+  updateStatus();
+  redraw();
+
+  const locked = hit >= 0 && state.shapes[hit] && state.shapes[hit].locked;
+  touchState.single = {
+    id: ev.pointerId,
+    mode: vertex >= 0 ? 'vertex' : hit >= 0 ? (locked ? 'none' : 'move') : 'pan',
+    hit,
+    vertex,
+    tool: state.tool,
+    start: pt,
+    startX: ev.clientX,
+    startY: ev.clientY,
+    started: false,
+    beforeShape: null,
+  };
+}
+
+function beginTouchDraw(ev) {
+  const raw = clientToImage(ev.clientX, ev.clientY);
+  const [cx, cy] = clampPointToImage(raw.x, raw.y);
+  const before = state.drawing ? JSON.stringify(state.drawing) : null;
+  const single = {
+    id: ev.pointerId,
+    mode: 'draw',
+    hit: -1,
+    vertex: -1,
+    tool: state.tool,
+    start: { x: cx, y: cy },
+    startX: ev.clientX,
+    startY: ev.clientY,
+    started: false,
+    drawingBefore: before,
+    drawChanged: false,
+  };
+  touchState.single = single;
+
+  // 矩形/直线支持按住拖拽，先落起点做预览；若第二根手指加入会恢复成按下前的状态
+  if (state.tool === 'rectangle' || state.tool === 'line') {
+    const shapeCount = state.shapes.length;
+    handleDrawClick(state.tool, { x: cx, y: cy }, ev);
+    single.drawChanged = state.shapes.length === shapeCount;
+  }
+}
+
+function touchDown(ev) {
+  touchState.pointers.set(ev.pointerId, touchPoint(ev));
+  if (!state.image) {
+    touchState.pointers.clear();
+    return;
+  }
+
+  if (touchState.pointers.size === 2) {
+    cancelTouchSingle();
+    touchState.suppress = true;
+    startTouchGesture();
+    return;
+  }
+  if (touchState.pointers.size > 2) return;
+
+  touchState.suppress = false;
+  state.hover = null;
+  if (!touchState.hintShown) {
+    touchState.hintShown = true;
+    toast('触屏：单指标注，双指缩放/平移，双击或“完成”结束多边形');
+  }
+  if (state.tool === 'select') beginTouchSelect(ev);
+  else beginTouchDraw(ev);
+}
+
+function startTouchGesture() {
+  const pts = [...touchState.pointers.values()].slice(0, 2);
+  if (pts.length < 2) return;
+  const cx = (pts[0].x + pts[1].x) / 2;
+  const cy = (pts[0].y + pts[1].y) / 2;
+  const dist = Math.max(10, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
+  const rect = canvas.getBoundingClientRect();
+  touchState.gesture = {
+    startDist: dist,
+    startView: { zoom: view.zoom, tx: view.tx, ty: view.ty },
+    anchor: {
+      x: (cx - rect.left - view.tx) / view.zoom,
+      y: (cy - rect.top - view.ty) / view.zoom,
+    },
+  };
+  touchState.lastTap = 0;
+  setManualZoomMode();
+}
+
+function applyTouchGesture() {
+  const g = touchState.gesture;
+  const pts = [...touchState.pointers.values()].slice(0, 2);
+  if (!g || pts.length < 2) return;
+  const cx = (pts[0].x + pts[1].x) / 2;
+  const cy = (pts[0].y + pts[1].y) / 2;
+  const dist = Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
+  const rect = canvas.getBoundingClientRect();
+  const z = clamp(g.startView.zoom * (dist / g.startDist), 0.02, 40);
+  view.zoom = z;
+  view.tx = (cx - rect.left) - g.anchor.x * z;
+  view.ty = (cy - rect.top) - g.anchor.y * z;
+  updateZoomLabel();
+  redraw();
+}
+
+function touchMove(ev) {
+  if (!touchState.pointers.has(ev.pointerId)) return;
+  touchState.pointers.set(ev.pointerId, touchPoint(ev));
+
+  if (touchState.gesture) {
+    if (touchState.pointers.size >= 2) applyTouchGesture();
+    return;
+  }
+
+  const s = touchState.single;
+  if (!s || s.id !== ev.pointerId) return;
+  const moved = Math.hypot(ev.clientX - s.startX, ev.clientY - s.startY);
+  if (!s.started && moved < 8) return;
+  s.started = true;
+
+  if (s.mode === 'pan') {
+    if (!touchState.pan) {
+      touchState.pan = { x: s.startX, y: s.startY, tx: view.tx, ty: view.ty };
+      setManualZoomMode();
+    }
+    view.tx = touchState.pan.tx + (ev.clientX - touchState.pan.x);
+    view.ty = touchState.pan.ty + (ev.clientY - touchState.pan.y);
+    redraw();
+    return;
+  }
+
+  if (s.mode === 'move' || s.mode === 'vertex') {
+    if (!state.drag) {
+      const shape = state.shapes[s.hit];
+      if (!shape || shape.locked) return;
+      s.beforeShape = JSON.parse(JSON.stringify(shape));
+      state.drag = {
+        mode: s.mode,
+        index: s.hit,
+        vertex: s.vertex,
+        before: snapshot(),
+        shape: JSON.parse(JSON.stringify(shape)),
+        start: s.start,
+      };
+    }
+    updateTouchDrag(clientToImage(ev.clientX, ev.clientY));
+    return;
+  }
+
+  if (s.mode === 'draw' && (s.tool === 'rectangle' || s.tool === 'line') && state.drawing) {
+    const raw = clientToImage(ev.clientX, ev.clientY);
+    const [cx, cy] = clampPointToImage(raw.x, raw.y);
+    state.drawing.cursor = [cx, cy];
+    redraw();
+  }
+}
+
+function handleTouchTap(ev, s) {
+  const raw = clientToImage(ev.clientX, ev.clientY);
+  const [cx, cy] = clampPointToImage(raw.x, raw.y);
+  const pt = { x: cx, y: cy };
+  const now = Date.now();
+  const d = state.drawing;
+  const finishable = !!d && ((d.type === 'polygon' && d.points.length >= 3)
+    || (d.type === 'linestrip' && d.points.length >= 2));
+  const doubleTap = finishable && now - touchState.lastTap < 330
+    && Math.hypot(ev.clientX - touchState.lastTapX, ev.clientY - touchState.lastTapY) < 28;
+  touchState.lastTap = now;
+  touchState.lastTapX = ev.clientX;
+  touchState.lastTapY = ev.clientY;
+
+  if (doubleTap) {
+    dropDuplicateTail(d);
+    finishDrawing();
+    return;
+  }
+  handleDrawClick(s.tool, pt, ev);
+}
+
+function finishTouchDraw(ev, s) {
+  if (s.tool === 'rectangle' || s.tool === 'line') {
+    const d = state.drawing;
+    if (d && d.type === s.tool && d.points.length === 1 && d.cursor
+      && dist2(d.points[0], d.cursor) >= 2 / view.zoom) {
+      finishDrawing();
+    }
+    return;
+  }
+  handleTouchTap(ev, s);
+}
+
+function finishTouchDrag() {
+  if (!state.drag) return;
+  const d = state.drag;
+  state.drag = null;
+  if (d.mode === 'move') {
+    const shape = state.shapes[d.index];
+    const moved = shape && shape.points[0] && d.shape.points[0]
+      && dist2(d.shape.points[0], shape.points[0]) > 0.01;
+    if (moved) recordChange(d.before);
+    else redraw();
+  } else {
+    recordChange(d.before);
+    redraw();
+  }
+}
+
+function cancelTouchSingle() {
+  const s = touchState.single;
+  touchState.single = null;
+  touchState.pan = null;
+  if (!s) return;
+
+  if (s.mode === 'draw' && s.drawChanged) {
+    state.drawing = s.drawingBefore ? JSON.parse(s.drawingBefore) : null;
+  }
+  if (state.drag && (s.mode === 'move' || s.mode === 'vertex')) {
+    if (s.beforeShape && s.hit >= 0) state.shapes[s.hit] = s.beforeShape;
+    state.drag = null;
+    refreshDocks();
+    updateStatus();
+  }
+  redraw();
+}
+
+function touchUp(ev) {
+  touchState.pointers.delete(ev.pointerId);
+
+  if (touchState.gesture) {
+    if (touchState.pointers.size < 2) touchState.gesture = null;
+    if (touchState.pointers.size === 0) {
+      touchState.suppress = false;
+    }
+    return;
+  }
+  if (touchState.suppress) {
+    if (touchState.pointers.size === 0) touchState.suppress = false;
+    return;
+  }
+
+  const s = touchState.single;
+  if (touchState.suppressTap) {
+    touchState.suppressTap = false;
+    if (s) touchState.single = null;
+    return;
+  }
+  if (!s || s.id !== ev.pointerId) return;
+  touchState.single = null;
+
+  if (!s.started) {
+    if (s.mode === 'draw') finishTouchDraw(ev, s);
+    // select：按下时已完成选中，轻点不再做第二次命中
+    return;
+  }
+
+  if (s.mode === 'pan') {
+    touchState.pan = null;
+    return;
+  }
+  if (s.mode === 'move' || s.mode === 'vertex') {
+    finishTouchDrag();
+    return;
+  }
+  if (s.mode === 'draw') finishTouchDraw(ev, s);
+}
+
+function touchCancel(ev) {
+  touchState.pointers.delete(ev.pointerId);
+  if (touchState.pointers.size < 2) touchState.gesture = null;
+  cancelTouchSingle();
+  if (touchState.pointers.size === 0) {
+    touchState.suppress = false;
+    touchState.suppressTap = false;
+  }
+}
+
 canvas.addEventListener('pointerdown', (ev) => {
   if (!state.image) return;
   try { canvas.setPointerCapture(ev.pointerId); } catch (e) { /* 合成事件无捕获 */ }
+  if (isTouchPointer(ev)) {
+    touchDown(ev);
+    return;
+  }
 
   if (ev.button === 1 || (ev.button === 0 && ev.altKey)) {
     setManualZoomMode();
@@ -1343,6 +1718,10 @@ canvas.addEventListener('pointerdown', (ev) => {
 });
 
 canvas.addEventListener('pointermove', (ev) => {
+  if (isTouchPointer(ev)) {
+    touchMove(ev);
+    return;
+  }
   const pt = clientToImage(ev.clientX, ev.clientY);
   state.hover = [pt.x, pt.y];
   updateCursorPos(pt);
@@ -1380,6 +1759,10 @@ canvas.addEventListener('pointermove', (ev) => {
 
 canvas.addEventListener('pointerup', (ev) => {
   try { canvas.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+  if (isTouchPointer(ev)) {
+    touchUp(ev);
+    return;
+  }
   if (state.panning) {
     state.panning = null;
     return;
@@ -1407,6 +1790,10 @@ canvas.addEventListener('pointerup', (ev) => {
   }
 });
 
+canvas.addEventListener('pointercancel', (ev) => {
+  if (isTouchPointer(ev)) touchCancel(ev);
+});
+
 canvas.addEventListener('dblclick', (ev) => {
   ev.preventDefault();
   if (state.drawing && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
@@ -1420,6 +1807,7 @@ canvas.addEventListener('dblclick', (ev) => {
 canvas.addEventListener('contextmenu', (ev) => {
   ev.preventDefault();
   if (state.drawing && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
+    if (touchState.pointers.size) touchState.suppressTap = true;
     finishDrawing();
   }
 });
@@ -1480,7 +1868,7 @@ function handleDrawClick(tool, pt, ev) {
   if (tool === 'polygon') {
     // 回到起点即闭合（桌面 labelme 的默认手势），不再重复添加起点
     if (d.points.length >= 3 && d.points[0]
-      && dist2(d.points[0], [pt.x, pt.y]) <= Math.pow(8 / view.zoom, 2)) {
+      && dist2(d.points[0], [pt.x, pt.y]) <= Math.pow((touchUi ? 18 : 8) / view.zoom, 2)) {
       finishDrawing();
       return;
     }
@@ -2782,7 +3170,15 @@ function resetSessionState() {
   state.redo = [];
   state.drawing = null;
   state.drag = null;
+  touchState.single = null;
+  touchState.pan = null;
+  touchState.gesture = null;
+  touchState.pointers.clear();
+  touchState.suppress = false;
+  touchState.suppressTap = false;
+  touchState.lastTap = 0;
   state.dirty = false;
+  toggleTouchActions();
 }
 
 async function newSession(reason) {
@@ -3648,6 +4044,7 @@ function setTool(id) {
   }
   if (state.tool !== id && state.drawing && state.drawing.type !== id) cancelDrawing();
   state.tool = id;
+  touchState.lastTap = 0;
   document.querySelectorAll('.tool-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.tool === id);
   });
@@ -4306,6 +4703,13 @@ function bindUi() {
     const files = ev.target.files;
     if (files && files.length) uploadFiles(files);
   });
+
+  const touchFinish = $('btnTouchFinish');
+  if (touchFinish) touchFinish.addEventListener('click', (ev) => { ev.preventDefault(); finishDrawing(); });
+  const touchUndo = $('btnTouchUndoPoint');
+  if (touchUndo) touchUndo.addEventListener('click', (ev) => { ev.preventDefault(); undoLastPoint(); });
+  const touchCancel = $('btnTouchCancel');
+  if (touchCancel) touchCancel.addEventListener('click', (ev) => { ev.preventDefault(); cancelDrawing(); });
 
   $('btnOpenFile2').addEventListener('click', () => pickFiles(false));
   $('btnUpload2').addEventListener('click', () => pickFiles(true));

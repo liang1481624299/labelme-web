@@ -569,3 +569,20 @@ html, body {
   .admin-top .who { order: 5; width: 100%; }
   .table th:nth-child(4), .table td:nth-child(4) { display: none; }
 }
+
+/* iPad / 触屏 Windows：登录和后台也按手指尺寸放大 */
+@media (any-pointer: coarse) {
+  .auth-body { padding: 24px 16px calc(24px + env(safe-area-inset-bottom)); min-height: 100dvh; }
+  .auth-card { max-width: 440px; padding: 26px 22px 20px; }
+  .auth-tab { min-height: 48px; font-size: 15px; }
+  .field > span { font-size: 13px; }
+  .field input { min-height: 48px; font-size: 16px; }
+  .auth-submit { min-height: 50px; font-size: 16px; }
+  .btn { min-height: 44px; padding: 10px 14px; font-size: 14px; }
+  .btn-sm { min-height: 40px; padding: 8px 12px; font-size: 13px; }
+  .form-row input, .form-row select, .config-grid input, .config-grid select, .config-grid textarea,
+  .admin-search input { min-height: 44px; font-size: 16px; }
+  .nav-item { min-height: 44px; }
+  .admin-top { padding: 10px 16px; }
+  .table th, .table td { padding-top: 10px; padding-bottom: 10px; }
+}
