@@ -139,7 +139,7 @@ if (params.get('sso_error')) {
     if (sso.enabled) {
       ssoEnabled = true;
       const btn = $('ssoBtn');
-      btn.textContent = `用${sso.label || '统一登录'}登录`;
+      btn.textContent = `用 ${sso.label || '统一登录'} 登录`;
       $('ssoBox').hidden = mode !== 'login';
       btn.addEventListener('click', () => {
         location.href = '/api/auth/sso/start?next=' + encodeURIComponent(next);
