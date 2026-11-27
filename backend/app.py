@@ -52,6 +52,33 @@ app = FastAPI(title="labelme-web", docs_url="/api/docs", openapi_url="/api/opena
 
 # 账号：所有 /api/* （除登录/注册/健康检查）都要求登录，页面层再做一次拦截
 app.middleware("http")(auth.auth_guard)
+
+# 统一安全响应头。CSP 允许页面自身的内联 style 属性，但不允许内联脚本与外部脚本。
+CSP = (
+    "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+    "form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'"
+)
+
+
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
+    response.headers.setdefault("Content-Security-Policy", CSP)
+    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if (proto or request.url.scheme) == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+app.middleware("http")(security_headers)
 app.include_router(auth.router)
 app.include_router(auth.admin_router)
 

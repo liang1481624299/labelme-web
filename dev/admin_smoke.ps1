@@ -17,12 +17,14 @@ $proc = Start-Process -FilePath $py -ArgumentList @('-m', 'uvicorn', 'backend.ap
 Start-Sleep -Seconds 4
 $base = 'http://127.0.0.1:9632'
 $pass = 0; $total = 0
+$script:csrf = ''
 function Check($cond, $name) {
   $script:total++
   if ($cond) { $script:pass++; Write-Host "PASS $name" } else { Write-Host "FAIL $name" }
 }
 function J($method, $url, $body) {
   $args = @{ Method = $method; Uri = "$base$url"; WebSession = $script:sess; ContentType = 'application/json' }
+  if ($script:csrf) { $args.Headers = @{ 'X-CSRF-Token' = $script:csrf } }
   if ($null -ne $body) { $args.Body = ($body | ConvertTo-Json -Compress) }
   Invoke-RestMethod @args
 }
@@ -32,6 +34,8 @@ try {
   Invoke-RestMethod -Method Post -Uri "$base/api/auth/register" -ContentType 'application/json' `
     -Body (@{ username = 'tester'; password = 'Passw0rd!2026' } | ConvertTo-Json) -WebSession $sess | Out-Null
   Check ((J GET '/api/auth/me' $null).user.role -eq 'admin') '第一个注册账号是管理员'
+  $script:csrf = (J GET '/api/auth/me' $null).csrf_token
+  Check ([bool]$script:csrf) 'GET /api/auth/me 返回 CSRF token'
 
   $methods = J GET '/api/auth/methods' $null
   Check ($methods.sso.enabled -eq $false) '/api/auth/methods 带 sso 且默认关闭'
@@ -63,7 +67,7 @@ try {
   $sid = $cs.session
   $img = Join-Path $tmp 'sample.jpg'
   [IO.File]::WriteAllBytes($img, [byte[]](0xFF, 0xD8, 0xFF, 0xD9))
-  Invoke-RestMethod -Method Post -Uri "$base/api/sessions/$sid/images" -Form @{ files = Get-Item $img } -WebSession $sess | Out-Null
+  Invoke-RestMethod -Method Post -Uri "$base/api/sessions/$sid/images" -Form @{ files = Get-Item $img } -WebSession $sess -Headers @{ 'X-CSRF-Token' = $script:csrf } | Out-Null
   Check $true '上传一张图'
 
   $files = J GET '/api/admin/files' $null

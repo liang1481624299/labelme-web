@@ -6,7 +6,8 @@
   放在 ``var/`` 而不是 ``data/``：``data/`` 是纯标注运行目录，删了会自动重建，
   账号不能跟着一起没。
 * 密码只存 bcrypt 哈希串（cost 12），数据库里没有明文，日志里也不打密码。
-* 登录态是随机 token，cookie 只带 token，库里存 token 的 sha256；7 天过期。
+* 登录态是随机 token，cookie 只带 token，库里存 token 的 sha256；默认 30 分钟空闲超时、
+  7 天绝对上限，会话里另存一枚 CSRF token。
 * 角色只有两级：``admin``（能进 /admin 管账号）与 ``annotator``（只能标注）。
 * 第一个注册的账号自动成为管理员；之后注册的都是 annotator。
 * 管理员可以关掉“允许注册”、禁用账号、改角色、重置密码、删账号。
@@ -24,7 +25,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -95,7 +96,8 @@ def init_db() -> None:
                 user_id    INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
-                last_seen_at TEXT
+                last_seen_at TEXT,
+                csrf_token TEXT
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
@@ -107,9 +109,15 @@ def init_db() -> None:
         session_cols = {r["name"] for r in conn.execute("PRAGMA table_info(auth_sessions)").fetchall()}
         if "last_seen_at" not in session_cols:
             conn.execute("ALTER TABLE auth_sessions ADD COLUMN last_seen_at TEXT")
+        if "csrf_token" not in session_cols:
+            conn.execute("ALTER TABLE auth_sessions ADD COLUMN csrf_token TEXT")
         conn.execute(
             "UPDATE auth_sessions SET last_seen_at=created_at "
             "WHERE last_seen_at IS NULL OR last_seen_at=''"
+        )
+        conn.execute(
+            "UPDATE auth_sessions SET csrf_token=lower(hex(randomblob(24))) "
+            "WHERE csrf_token IS NULL OR csrf_token=''"
         )
         # LDAP 接入层：影子账号要记来源和外部 ID（老库用 ALTER 补齐，幂等）
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -243,6 +251,7 @@ def _token_hash(token: str) -> str:
 
 def issue_session(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
+    csrf = secrets.token_urlsafe(32)
     now = datetime.now()
     now_text = now.isoformat(" ", timespec="seconds")
     expires = (now + timedelta(days=SESSION_DAYS)).isoformat(" ", timespec="seconds")
@@ -254,9 +263,10 @@ def issue_session(user_id: int) -> str:
             (now_text, idle_cutoff),
         )
         conn.execute(
-            "INSERT INTO auth_sessions(token_hash, user_id, created_at, expires_at, last_seen_at) "
-            "VALUES(?,?,?,?,?)",
-            (_token_hash(token), user_id, now_text, expires, now_text),
+            "INSERT INTO auth_sessions"
+            "(token_hash, user_id, created_at, expires_at, last_seen_at, csrf_token) "
+            "VALUES(?,?,?,?,?,?)",
+            (_token_hash(token), user_id, now_text, expires, now_text, csrf),
         )
         conn.commit()
     return token
@@ -292,7 +302,7 @@ def user_from_request(request: Request) -> Optional[sqlite3.Row]:
     touch_cutoff = (now_dt - timedelta(seconds=SESSION_TOUCH_SECONDS)).isoformat(" ", timespec="seconds")
     with connect() as conn:
         row = conn.execute(
-            "SELECT u.* FROM auth_sessions s JOIN users u ON u.id = s.user_id "
+            "SELECT u.*, s.csrf_token FROM auth_sessions s JOIN users u ON u.id = s.user_id "
             "WHERE s.token_hash=? AND s.expires_at > ? AND s.last_seen_at >= ?",
             (_token_hash(token), now, idle_cutoff),
         ).fetchone()
@@ -347,9 +357,30 @@ def require_admin(user: Dict[str, Any] = None) -> Dict[str, Any]:
     return user
 
 
+def _request_is_same_origin(request: Request) -> bool:
+    """浏览器发起的写请求必须来自本站。
+
+    Origin 缺失时（curl / 部分脚本）放行，因为此时不存在浏览器自动带 cookie
+    的 CSRF 场景；但浏览器明确标了 cross-site / same-site 一律拒绝。
+    """
+    site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if site in {"cross-site", "same-site"}:
+        return False
+    origin = (request.headers.get("origin") or "").strip()
+    if not origin:
+        return True
+    if origin == "null":
+        return False
+    host = (request.headers.get("host") or "").strip().lower()
+    forwarded = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip().lower()
+    allowed = {value for value in (host, forwarded) if value}
+    return bool(allowed) and urlsplit(origin).netloc.lower() in allowed
+
+
 async def auth_guard(request: Request, call_next):
-    """最外层兜底：除了登录/注册/健康检查，/api/* 一律要求登录。"""
+    """最外层兜底：除登录/注册/健康检查，/api/* 一律要求登录；写接口再过 CSRF。"""
     path = request.url.path
+    unsafe = request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
     public = path in {
         "/api/health",
         "/api/auth/login",
@@ -358,9 +389,17 @@ async def auth_guard(request: Request, call_next):
         "/api/auth/sso/start",
         "/api/auth/sso/callback",
     }
+    if path.startswith("/api/") and unsafe and not _request_is_same_origin(request):
+        return JSONResponse({"detail": "跨站请求已被拒绝"}, status_code=403)
     if path.startswith("/api/") and not public:
-        if user_from_request(request) is None:
+        row = user_from_request(request)
+        if row is None:
             return JSONResponse({"detail": "请先登录"}, status_code=401)
+        if unsafe:
+            sent = request.headers.get("x-csrf-token", "")
+            expected = row["csrf_token"] or ""
+            if not expected or not secrets.compare_digest(sent, expected):
+                return JSONResponse({"detail": "CSRF 校验失败，请刷新页面后重试"}, status_code=403)
     return await call_next(request)
 
 
@@ -402,7 +441,10 @@ def clear_failures(request: Request, username: str) -> None:
 # ------------------------------------------------------------------ auth api
 @router.get("/me")
 def me(request: Request) -> Dict[str, Any]:
-    return {"user": current_user(request)}
+    row = user_from_request(request)
+    if row is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    return {"user": user_row_to_dict(row), "csrf_token": row["csrf_token"] or ""}
 
 
 @router.post("/register")

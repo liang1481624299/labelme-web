@@ -69,8 +69,13 @@ function httpStatusText(status) {
   return HTTP_STATUS_TEXT[status] || `请求失败（${status}）`;
 }
 
+let csrfToken = '';
+
 async function req(method, path, body, isForm) {
   const opts = { method, headers: {}, credentials: 'same-origin' };
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(String(method).toUpperCase())) {
+    opts.headers['X-CSRF-Token'] = csrfToken;
+  }
   if (body && isForm) {
     opts.body = body;
   } else if (body !== undefined && body !== null) {
@@ -3144,7 +3149,7 @@ function importLabelsFile() {
       }
       const res = await fetch('/api/labels' + projectQuery(), {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
         credentials: 'same-origin',
         body: JSON.stringify({ labels: names }),
       });
@@ -4452,8 +4457,9 @@ function bindUi() {
       try {
         fetch(`/api/sessions/${state.sessionId}/annotations/${encodeURIComponent(state.image.name)}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
           body: JSON.stringify(buildAnnotation()),
+          credentials: 'same-origin',
           keepalive: true,
         });
       } catch (e) { /* ignore */ }
@@ -4461,8 +4467,9 @@ function bindUi() {
         writeDraft();
         fetch(`/api/sessions/${state.sessionId}/drafts/${encodeURIComponent(state.image.name)}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
           body: JSON.stringify(draftPayload()),
+          credentials: 'same-origin',
           keepalive: true,
         });
       } catch (e) { /* ignore */ }
@@ -4499,6 +4506,7 @@ async function reloadImageCanvas() {
 async function boot() {
   try {
     const meRes = await req('GET', '/api/auth/me');
+    if (meRes && meRes.csrf_token) csrfToken = meRes.csrf_token;
     if (meRes && meRes.user) {
       state.user = meRes.user;
       const su = $('statusUser');

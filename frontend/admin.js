@@ -5,6 +5,7 @@
 
 const $ = (id) => document.getElementById(id);
 let me = null;
+let csrfToken = '';
 
 const HTTP_STATUS_TEXT = {
   400: '请求有误，请检查提交内容',
@@ -32,6 +33,9 @@ function msg(el, text, ok) {
 
 async function api(method, path, body) {
   const opts = { method, headers: {}, credentials: 'same-origin' };
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(String(method).toUpperCase())) {
+    opts.headers['X-CSRF-Token'] = csrfToken;
+  }
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
@@ -245,6 +249,7 @@ async function load() {
     if (!me) {
       const res = await api('GET', '/api/auth/me');
       me = res.user;
+      if (res.csrf_token) csrfToken = res.csrf_token;
       $('who').textContent = `${me.username} · ${me.role === 'admin' ? '管理员' : '标注员'}`;
       $('sideUser').textContent = me.username;
     }

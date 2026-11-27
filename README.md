@@ -39,7 +39,8 @@ labelme-web/
 │           ├── 114.json
 │           └── .drafts/  # 崩溃草稿，正常保存后自动删除
 ├── var/
-│   └── labelme-web.db    # 账号库（bcrypt 哈希），运行时生成，不进 Git
+│   ├── labelme-web.db    # 账号库（bcrypt 哈希），运行时生成，不进 Git
+│   └── .secret.key       # 敏感配置加密密钥，首次启动生成，不进 Git，备份时必带
 ├── deploy/
 │   ├── nginx.conf
 │   ├── labelme-web.service
@@ -152,6 +153,15 @@ data/shiroko/电路板A/114.json    ← 该图的标注
   库里只存 token 的 sha256；**默认 30 分钟无操作即失效**，活跃请求会滑动续期但不会延长 7 天绝对上限。
   改角色、禁用、改密码都会立刻作废旧登录态。空闲/绝对过期可用
   `LABELME_WEB_SESSION_IDLE_MINUTES`（5–1440）与 `LABELME_WEB_SESSION_DAYS`（1–30）调整。
+- CSRF：每个登录会话带一枚独立 token，`GET /api/auth/me` 返回，前端对 POST/PUT/PATCH/DELETE 发
+  `X-CSRF-Token`；同时检查 `Origin` / `Sec-Fetch-Site`，跨站写请求直接 403。脚本调用写接口也要带
+  这枚 token，否则会被拒绝。
+- 安全响应头：应用统一加 CSP、`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`、
+  `Permissions-Policy`、`Cross-Origin-Opener-Policy`；HTTPS 请求额外加 HSTS。
+- 敏感配置加密：LDAP bind 密码、SSO client secret、AI API Key 落库前用 Fernet（AES）加密，
+  数据库里是 `enc:v1:...` 密文。密钥默认在 `var/.secret.key`（0600），也可用
+  `LABELME_WEB_SECRET_KEY` 派生或 `LABELME_WEB_SECRET_KEY_FILE` 指定路径；**备份数据库时要连密钥文件一起拷**，
+  否则换机后密文解不开。
 - 角色两级：
   - `admin`：能进 `/admin` 管账号；
   - `annotator`：只能标注，访问 `/admin` 返回 403。
@@ -451,7 +461,15 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 `LABELME_WEB_COOKIE_SECURE=1` 强制）。
 
 账号库在 `var/labelme-web.db`（systemd 单元里 `LABELME_WEB_DB` 指过去，`ReadWritePaths` 含 `var`），
-备份时和 `data/` 一起拷走就行。
+备份时和 `data/` 一起拷走就行。**还必须带上敏感配置密钥 `var/.secret.key`（或你设置的
+`LABELME_WEB_SECRET_KEY` / `LABELME_WEB_SECRET_KEY_FILE`），否则 LDAP/SSO/AI 的密文在新机器上解不开。**
+
+| 安全相关变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `LABELME_WEB_SESSION_IDLE_MINUTES` | 30 | 无操作多久失效，5–1440 |
+| `LABELME_WEB_SESSION_DAYS` | 7 | 登录态绝对上限，1–30 天 |
+| `LABELME_WEB_SECRET_KEY` | 空 | 任意字符串，经 SHA-256 派生 Fernet 密钥；设置后覆盖密钥文件 |
+| `LABELME_WEB_SECRET_KEY_FILE` | `var/.secret.key` | 密钥文件路径；首次启动自动生成，权限 0600 |
 
 ## 功能对标
 
@@ -502,13 +520,16 @@ Web 版结果更贴近原始轮廓，但点数更多。需要完全一致可后�
 
 ## HTTP API
 
+除登录/注册/健康检查外，所有 `/api/*` 都要带登录 cookie；POST/PUT/PATCH/DELETE 还要带
+`GET /api/auth/me` 返回的 `csrf_token`，放在 `X-CSRF-Token` 请求头里。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查，返回 `{"status":"ok","labelme":"7.11.0"}`（无需登录） |
 | POST | `/api/auth/register` | 注册，body `{username,password}`；首个账号 = 管理员 |
 | POST | `/api/auth/login` | 登录，成功后下发 `lmweb_session` cookie |
 | POST | `/api/auth/logout` | 退出登录并删掉服务端 token |
-| GET | `/api/auth/me` | 当前账号 `{user:{id,username,role,enabled}}` |
+| GET | `/api/auth/me` | 当前账号 `{user:{id,username,role,enabled}, csrf_token}`；CSRF token 给写请求用 |
 | GET | `/api/settings` | 当前账号的标注页设置（默认值与已保存值合并） |
 | PUT | `/api/settings` | 保存当前账号设置，body `{"settings":{...}}`；只收已知键，类型/枚举/颜色会校验 |
 | GET | `/api/ai/models` | 当前账号可选的 AI 模型清单（只含 id/名称/能力/许可证，不含接口密钥） |

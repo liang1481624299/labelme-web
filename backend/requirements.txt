@@ -2,8 +2,9 @@ fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
 bcrypt>=4.0
+# 敏感配置（LDAP/SSO/AI 密钥）落库加密，必需
+cryptography>=42
 # 可选：只有配了 LDAP 地址（环境变量或后台页面）才用得到（纯 Python，无编译依赖）
 ldap3>=2.9
-# 可选：只有开了 SSO（OIDC）才用得到。PyJWT 校验 id_token，cryptography 提供 RSA/ES 验签
+# 可选：只有开了 SSO（OIDC）才用得到。PyJWT 校验 id_token
 PyJWT>=2.8
-cryptography>=42

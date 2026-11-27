@@ -41,6 +41,22 @@ HOP_BY_HOP = {
     "content-length",
 }
 
+# 开发服务自己返回静态文件，不经过后端中间件，所以这些头要在这里补一遍，
+# 保证本地和生产的 CSP / 防点击劫持行为一致。
+STATIC_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+        "form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "X-Robots-Tag": "noindex, nofollow",
+}
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -48,6 +64,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:  # 简洁日志
         sys.stderr.write("[dev] %s %s\n" % (self.command, self.path.split("?")[0]))
+
+    def _send_security_headers(self) -> None:
+        for key, value in STATIC_SECURITY_HEADERS.items():
+            self.send_header(key, value)
+        proto = (self.headers.get("X-Forwarded-Proto") or "").lower()
+        if proto == "https":
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
 
     # ------------------------------------------------------------- 静态文件
     def _serve_static(self, head_only: bool = False) -> None:
@@ -87,6 +110,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._send_security_headers()
         self.end_headers()
         if not head_only:
             self.wfile.write(body)
@@ -96,6 +120,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -116,6 +141,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(body.encode("utf-8"))
 
@@ -131,6 +157,12 @@ class Handler(BaseHTTPRequestHandler):
             if key.lower() == "accept-encoding":
                 continue  # 让后端返回未压缩内容，转发逻辑更简单
             headers[key] = value
+        # Host 是逐跳头，代理时会被去掉；但 CSRF 的 Origin 校验需要原始 Host。
+        original_host = self.headers.get("Host", "")
+        if original_host:
+            headers["X-Forwarded-Host"] = original_host
+        if "X-Forwarded-Proto" not in headers:
+            headers["X-Forwarded-Proto"] = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
 
         url = API_BASE.rstrip("/") + self.path
         req = urllib.request.Request(url, data=body, headers=headers, method=self.command)
@@ -186,6 +218,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Allow", "GET,HEAD,POST,PUT,DELETE,PATCH,OPTIONS")
         self.send_header("Content-Length", "0")
+        self._send_security_headers()
         self.end_headers()
 
 
