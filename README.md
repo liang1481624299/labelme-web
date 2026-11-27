@@ -405,6 +405,8 @@ labelme data/<用户名>/<工程名> --labels data/<用户名>/<工程名>/label
 
 iPad 上打开文件用「打开文件」多选相册/文件即可；Safari 不支持 `webkitdirectory`，所以「打开文件夹」在 iPad 上只会打开普通文件选择器。建议通过 HTTPS 访问；iPad 上可「添加到主屏幕」，Safari 会以 Web Clip 全屏打开（项目未配置 Service Worker，不做离线缓存）。
 
+局域网用 iPad 真机测试时，前端要监听局域网地址：`python dev/serve.py --host 0.0.0.0`，再用 iPad 打开 `http://<电脑局域网 IP>:9630`（Windows 防火墙需放行 9630）；后端仍只监听 `127.0.0.1`，由前端反代，不需要额外开放 9631。
+
 ## 端口约定
 
 | 角色 | 端口 | 由谁监听 |
