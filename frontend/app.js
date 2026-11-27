@@ -3108,6 +3108,33 @@ async function createProject(name) {
   await switchProject(res.project ? res.project.name : clean);
 }
 
+/** 一键把工程压成 zip，zip 留在 data/<用户>/ 下，同时触发浏览器下载。 */
+async function packageProject(name, owner) {
+  const targetName = String(name || state.project || '').trim();
+  const targetOwner = String(owner || state.owner || '').trim();
+  if (!targetName || !targetOwner) {
+    toast('还没有可打包的工程');
+    return;
+  }
+  toast(`正在打包工程「${targetName}」…`);
+  try {
+    const res = await req('POST', '/api/projects/package', {
+      owner: targetOwner,
+      name: targetName,
+    });
+    if (!res || !res.download_url) throw new Error('服务端没有返回下载地址');
+    const a = document.createElement('a');
+    a.href = res.download_url;
+    a.download = res.file || `${targetName}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast(`已打包 ${res.file || `${targetName}.zip`}，文件保留在用户目录`);
+  } catch (e) {
+    toast(`打包失败：${e.message}`, true);
+  }
+}
+
 function openProjectModal() {
   const modal = $('projectModal');
   if (!modal) return;
@@ -3126,6 +3153,16 @@ function openProjectModal() {
       row.className = 'row' + (p.name === state.project ? ' selected' : '');
       row.innerHTML = `<span class="name"></span><span class="meta">${p.created_at}</span>`;
       row.querySelector('.name').textContent = p.name;
+      const packBtn = document.createElement('button');
+      packBtn.className = 'btn btn-sm';
+      packBtn.type = 'button';
+      packBtn.textContent = '打包';
+      packBtn.title = '打包成 zip 并下载';
+      packBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        packageProject(p.name, p.owner);
+      });
+      row.appendChild(packBtn);
       row.addEventListener('click', async () => {
         modal.hidden = true;
         try {
@@ -3806,6 +3843,8 @@ const MENUS = [
   {
     name: '在线(&O)',
     items: [
+      { id: 'packageProject', label: '打包当前工程（zip）' },
+      { sep: true },
       { id: 'projects', label: '切换工程…' },
       { id: 'newProject', label: '新建工程…' },
       { sep: true },
@@ -4111,6 +4150,9 @@ function runAction(id) {
       break;
     case 'projects':
       openProjectModal();
+      break;
+    case 'packageProject':
+      packageProject();
       break;
     case 'newProject':
       openProjectModal();
@@ -4825,6 +4867,10 @@ function bindUi() {
 
   const btnCreateProject = $('btnCreateProject');
   if (btnCreateProject) btnCreateProject.addEventListener('click', submitProjectModal);
+  const btnPackageProject = $('btnPackageProject');
+  if (btnPackageProject) {
+    btnPackageProject.addEventListener('click', () => packageProject());
+  }
   const newProjectName = $('newProjectName');
   if (newProjectName) {
     newProjectName.addEventListener('keydown', (ev) => {

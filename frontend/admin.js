@@ -211,6 +211,21 @@ function renderUsers(users) {
   syncUserSelection();
 }
 
+async function packageAdminProject(owner, name) {
+  try {
+    const res = await api('POST', '/api/projects/package', { owner, name });
+    const a = document.createElement('a');
+    a.href = res.download_url;
+    a.download = res.file || `${name}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    msg($('projectMsg'), `已打包 ${res.file || `${name}.zip`}，文件保留在 ${owner}/ 目录`, true);
+  } catch (err) {
+    msg($('projectMsg'), err.message, false);
+  }
+}
+
 function renderProjects(projects) {
   const box = $('projectRows');
   box.innerHTML = '';
@@ -230,9 +245,16 @@ function renderProjects(projects) {
     createdCell.textContent = fmt(p.created_at);
 
     const actionCell = document.createElement('td');
+    const packageBtn = document.createElement('button');
+    packageBtn.className = 'btn btn-sm';
+    packageBtn.textContent = '打包';
+    packageBtn.title = '打包成 zip 并下载';
+    packageBtn.addEventListener('click', () => packageAdminProject(p.owner, p.name));
+
     const detailBtn = document.createElement('button');
     detailBtn.className = 'btn btn-sm';
     detailBtn.textContent = '详情';
+    detailBtn.style.marginLeft = '6px';
     detailBtn.addEventListener('click', () => showProjectDetail(p.owner, p.name));
 
     const renameBtn = document.createElement('button');
@@ -265,7 +287,7 @@ function renderProjects(projects) {
         msg($('projectMsg'), err.message, false);
       }
     });
-    actionCell.append(detailBtn, renameBtn, delBtn);
+    actionCell.append(packageBtn, detailBtn, renameBtn, delBtn);
 
     row.append(ownerCell, nameCell, sessionsCell, createdCell, actionCell);
     box.appendChild(row);

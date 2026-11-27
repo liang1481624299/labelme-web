@@ -270,6 +270,47 @@ def get_project_detail(request: Request, owner: Optional[str] = None,
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.post("/api/projects/package")
+def package_project(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """一键打包工程：zip 写到 data/<用户名>/ 下，返回下载地址。"""
+    target_owner = _owner(request, payload.get("owner"))
+    name = payload.get("name") or payload.get("project")
+    if not name:
+        raise HTTPException(status_code=400, detail="需要 name")
+    try:
+        result = workspace.package_project(target_owner, name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="工程不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    result["download_url"] = (
+        "/api/projects/package/download?"
+        + urllib.parse.urlencode({"owner": target_owner, "name": result["project"]})
+    )
+    return result
+
+
+@app.get("/api/projects/package/download")
+def download_project_package(
+    request: Request, owner: Optional[str] = None, name: Optional[str] = None
+) -> FileResponse:
+    """下载已经打包好的工程 zip；没有打包过就提示先打包。"""
+    target_owner = _owner(request, owner)
+    if not name:
+        raise HTTPException(status_code=400, detail="需要 name")
+    try:
+        path = workspace.package_zip_path(target_owner, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="压缩包不存在，请先打包")
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"{workspace.safe_component(name, '工程名')}.zip",
+    )
+
+
 @app.post("/api/sessions")
 def create_session(request: Request, owner: Optional[str] = None, project: Optional[str] = None) -> Dict[str, Any]:
     """在当前工程下新建 data/<用户名>/<工程>/<YYYYMMDDHHMMSS>/。"""

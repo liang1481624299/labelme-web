@@ -19,6 +19,7 @@ import re
 import shutil
 import sqlite3
 import threading
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,6 +35,7 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".we
 DRAFT_DIRNAME = ".drafts"
 
 _LOCK = threading.RLock()
+_PACK_LOCK = threading.Lock()
 _DB: Optional[Path] = None
 
 
@@ -196,6 +198,63 @@ def delete_project(owner: str, name: str) -> int:
             conn.commit()
         shutil.rmtree(path, ignore_errors=True)
     return 1
+
+
+def package_zip_path(owner: str, project: str) -> Path:
+    """工程 zip 固定放在用户目录下，和工程目录平级，方便 OpenList 直接浏览。"""
+    owner = safe_component(owner, "用户名")
+    project = safe_component(project, "工程名")
+    return DATA_DIR / owner / f"{project}.zip"
+
+
+def package_project(owner: str, project: str) -> Dict[str, Any]:
+    """把整个工程目录压成 zip；zip 留在 data/<用户名>/ 下，不自动删除。
+
+    压缩包内保留工程名作为顶层目录，解压后可以直接拖回桌面版 labelme
+    当作 Annotation Folder 打开。
+    """
+    owner = safe_component(owner, "用户名")
+    project = safe_component(project, "工程名")
+    root = project_dir(owner, project)
+    if not root.is_dir():
+        raise FileNotFoundError("工程不存在")
+
+    owner_dir = DATA_DIR / owner
+    owner_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = owner_dir / f"{project}.zip"
+    tmp_path = owner_dir / f".{project}.zip.tmp"
+
+    with _PACK_LOCK:
+        try:
+            with zipfile.ZipFile(
+                tmp_path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
+            ) as zf:
+                # 空工程也要在 zip 里保留一个顶层目录
+                info = zipfile.ZipInfo(f"{project}/")
+                info.external_attr = (0o40755 << 16) | 0x10
+                zf.writestr(info, b"")
+
+                for path in sorted(root.rglob("*"), key=lambda p: p.as_posix()):
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    rel = path.relative_to(root).as_posix()
+                    zf.write(path, arcname=f"{project}/{rel}")
+            os.replace(tmp_path, zip_path)
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+
+    return {
+        "owner": owner,
+        "project": project,
+        "file": zip_path.name,
+        "path": f"{owner}/{zip_path.name}",
+        "bytes": zip_path.stat().st_size,
+        "mtime": _mtime(zip_path),
+    }
 
 
 def project_detail(owner: str, name: str) -> Dict[str, Any]:
