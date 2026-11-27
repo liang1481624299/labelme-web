@@ -226,6 +226,23 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="aiModelsModal" hidden>
+  <div class="modal ai-models-modal">
+    <header>
+      <span>AI 模型</span>
+      <button class="x" data-close>&times;</button>
+    </header>
+    <div class="modal-body">
+      <p class="settings-note" id="aiModelHint">选择后端已提供的模型；列表会按部署方实际安装的模型显示。</p>
+      <div class="ai-model-list" id="aiModelList"></div>
+    </div>
+    <footer>
+      <button class="btn" id="btnAiModelsRefresh">刷新列表</button>
+      <button class="btn btn-primary" id="btnAiModelsOk">使用所选模型</button>
+    </footer>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="settingsModal" hidden>
   <div class="modal settings-modal">
     <header>

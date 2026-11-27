@@ -211,7 +211,7 @@ data/shiroko/电路板A/114.json    ← 该图的标注
 
 两个保护：不能禁用/删除自己；系统至少保留一个启用的管理员。
 
-标注页只多了一个「文件 → 退出登录」和状态栏右下角的当前账号名，没有管理相关按钮。
+标注页只多了一个「在线 → 退出登录」和状态栏右下角的当前账号名，没有管理相关按钮。
 
 ## LDAP / AD 接入（可选）
 
@@ -472,12 +472,15 @@ HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块
 - 视图：十字准星开关、允许点在图像外（`allow_out_of_bounds_points`）、显示/隐藏侧边面板、重置面板布局；
   滚轮与按钮缩放固定以图像中心为锚点，画面不随鼠标位置漂移；绘制中的矩形/圆/多边形预览实时裁到图像边界
 
-**未对标**：标注页的 `AI-Segment`、`AI-Find All`、SAM 模型下拉，以及桌面版的模型下载 / 删除（`open_models`）。
-这些依赖服务端 SAM 权重与 GPU，纯 Web 源码部署没有模型可用，标注页的 AI 入口仍置灰。
+**未对标**：标注页的 `AI-Segment`、`AI-Find All` 仍置灰，桌面版的模型下载 / 删除（`open_models`）
+也没有搬到 Web。Web 的「文件 → AI 模型…」只负责让用户从**后端已提供**的模型里选一个，按账号保存；
+真正的 SAM 权重下载、安装与推理服务仍由部署方负责。
 管理后台已经提供 **AI 模型**配置页：SAM 这一段内置了与桌面版一致的模型目录（SAM 2 Base+、SAM 3、
 EfficientSAM Tiny/Small、SAM 2 Small/Large、SAM Base/Large/Huge、YOLO-World），可以选择默认模型、
 保存推理服务地址、API Key 与超时，并用 `GET <endpoint>/health` 做连通性测试；另有一套 OpenAI 兼容
 接口配置（地址、模型、Key、超时）作为预留，只保存不参与标注，测试连接会请求 `<base_url>/models`。
+标注页只展示 `GET /api/ai/models` 返回的模型；默认把内置目录视为全部可用，部署方可用
+`LABELME_WEB_AI_MODELS="sam2:base+,sam2:large"` 或数据库键 `ai.models` 收窄成实际安装的模型。
 真正的分割推理尚未接入 Web 标注页（后端不加载 torch/SAM 权重）。
 要打通需要在服务端部署一个实现 `/health` 的推理服务，再补 `/api/ai/segment` 代理与前端点选交互。
 
@@ -506,6 +509,7 @@ Web 版结果更贴近原始轮廓，但点数更多。需要完全一致可后�
 | GET | `/api/auth/me` | 当前账号 `{user:{id,username,role,enabled}}` |
 | GET | `/api/settings` | 当前账号的标注页设置（默认值与已保存值合并） |
 | PUT | `/api/settings` | 保存当前账号设置，body `{"settings":{...}}`；只收已知键，类型/枚举/颜色会校验 |
+| GET | `/api/ai/models` | 当前账号可选的 AI 模型清单（只含 id/名称/能力/许可证，不含接口密钥） |
 | GET | `/api/auth/methods` | 登录方式（`{password:true, ldap:{enabled,label}, sso:{enabled,label}, site_name, upload_max_mb}`），不泄露地址与 client |
 | GET | `/api/auth/sso/start` | 302 到 IdP 授权页；未启用 SSO 时 404 |
 | GET | `/api/auth/sso/callback` | IdP 回调：换 token、验 `id_token`、发本地会话、回 `next`；失败 302 到登录页带 `sso_error` |

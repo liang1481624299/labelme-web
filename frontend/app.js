@@ -174,6 +174,7 @@ const state = {
   showLabels: true,
   autoAddLabel: true,
   aiEnabled: false,
+  aiModel: '',
 };
 
 const view = {
@@ -941,6 +942,7 @@ function applyUserSettings(data) {
   state.autoAddLabel = d.auto_add_label !== false;
   state.fillDrawing = d.fill_drawing !== false;
   state.aiEnabled = !!d.ai_enabled;
+  state.aiModel = typeof d.ai_model === 'string' ? d.ai_model : '';
   colorCache.clear();
   applyTheme();
 }
@@ -965,6 +967,7 @@ function collectUserSettings() {
     auto_add_label: state.autoAddLabel,
     fill_drawing: state.fillDrawing,
     ai_enabled: state.aiEnabled,
+    ai_model: state.aiModel,
   };
 }
 
@@ -3283,8 +3286,6 @@ const MENUS = [
       { sep: true },
       { id: 'settings', label: '设置…', sc: 'Ctrl+Shift+,' },
       { id: 'aiModels', label: 'AI 模型…' },
-      { sep: true },
-      { id: 'quit', label: '退出(&Q)', sc: 'Ctrl+Q' },
     ],
   },
   {
@@ -3646,9 +3647,6 @@ function runAction(id) {
     case 'changeOutputDir':
       openProjectModal();
       break;
-    case 'quit':
-      quitApp();
-      break;
     case 'aiModels':
       openAiModels();
       break;
@@ -3930,17 +3928,72 @@ function runAction(id) {
   }
 }
 
-function quitApp() {
-  if (!window.confirm('退出 Labelme Web？未保存的改动会先自动保存。')) return;
-  logoutUser();
+async function openAiModels() {
+  $('aiModelsModal').hidden = false;
+  await refreshAiModelList();
 }
 
-function openAiModels() {
-  if (!isAdminUser()) {
-    toast('AI 模型由管理员在管理后台配置', true);
+async function refreshAiModelList() {
+  const list = $('aiModelList');
+  const hint = $('aiModelHint');
+  list.innerHTML = '<div class="settings-note">正在读取后端模型列表…</div>';
+  try {
+    const res = await req('GET', '/api/ai/models');
+    const models = Array.isArray(res.models) ? res.models : [];
+    const hasSaved = models.some((model) => model.id === state.aiModel);
+    const current = hasSaved ? state.aiModel : (res.default_model || '');
+    if (!models.length) {
+      list.innerHTML = '<div class="settings-note">后端还没有安装任何 AI 模型。</div>';
+      hint.textContent = '模型由部署方安装后才会出现在这里。';
+      return;
+    }
+    list.innerHTML = '';
+    models.forEach((model) => {
+      const row = document.createElement('label');
+      row.className = 'ai-model-row';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'aiModel';
+      radio.value = model.id;
+      radio.checked = model.id === current;
+      const main = document.createElement('div');
+      main.className = 'ai-model-main';
+      const title = document.createElement('div');
+      title.className = 'ai-model-title';
+      title.textContent = model.name || model.id;
+      if (model.recommended) {
+        const badge = document.createElement('span');
+        badge.className = 'ai-model-badge';
+        badge.textContent = '推荐';
+        title.appendChild(badge);
+      }
+      const meta = document.createElement('div');
+      meta.className = 'ai-model-meta';
+      meta.textContent = [model.caps, model.note, model.license].filter(Boolean).join(' · ');
+      main.appendChild(title);
+      main.appendChild(meta);
+      row.appendChild(radio);
+      row.appendChild(main);
+      list.appendChild(row);
+    });
+    const enabled = res.enabled ? 'AI 已启用' : 'AI 尚未启用';
+    hint.textContent = `${enabled}。选择只保存为当前账号的偏好；推理接入后按这里选中的模型调用。`;
+  } catch (e) {
+    list.innerHTML = '<div class="settings-note">模型列表读取失败。</div>';
+    hint.textContent = e.message || '请稍后重试。';
+  }
+}
+
+function saveAiModelSelection() {
+  const picked = document.querySelector('#aiModelList input[name="aiModel"]:checked');
+  if (!picked) {
+    toast('请先选择一个模型', true);
     return;
   }
-  window.open('/admin', '_blank', 'noopener');
+  state.aiModel = picked.value;
+  scheduleSettingsSave();
+  $('aiModelsModal').hidden = true;
+  toast(`已选择 AI 模型：${picked.value}`);
 }
 
 function pickFiles(directory) {
@@ -4053,10 +4106,6 @@ document.addEventListener('keydown', (ev) => {
       case 'j':
         ev.preventDefault();
         runAction('editShape');
-        return;
-      case 'q':
-        ev.preventDefault();
-        quitApp();
         return;
       case 'h':
         ev.preventDefault();
@@ -4242,6 +4291,8 @@ function bindUi() {
     renderFlagChecks('labelFlags', collectFlagChecks('labelFlags'));
   });
   $('btnImgFlagsOk').addEventListener('click', () => closeImageFlags(true));
+  $('btnAiModelsRefresh').addEventListener('click', refreshAiModelList);
+  $('btnAiModelsOk').addEventListener('click', saveAiModelSelection);
   $('btnAddImgFlag').addEventListener('click', () => {
     const input = $('newImgFlagInput');
     const name = (input.value || '').trim();

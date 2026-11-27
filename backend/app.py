@@ -558,11 +558,30 @@ def get_user_settings(user: Dict[str, Any] = Depends(auth.current_user)) -> Dict
     return {"settings": user_settings.get(user["username"]), "username": user["username"]}
 
 
+@app.get("/api/ai/models")
+def get_public_ai_models(user: Dict[str, Any] = Depends(auth.current_user)) -> Dict[str, Any]:
+    """标注页“AI 模型”用的可用清单，只暴露模型元数据，不暴露接口密钥。"""
+    models = _available_ai_models()
+    default_model = settings_store.get(
+        "ai.sam.model", "", settings_store.get("ai.model", "", AI_DEFAULT_MODEL)
+    )
+    if models and default_model not in {item["id"] for item in models}:
+        default_model = models[0]["id"]
+    return {
+        "enabled": settings_store.get_bool("ai.enabled", "", False),
+        "default_model": default_model,
+        "models": models,
+    }
+
+
 @app.put("/api/settings")
 def put_user_settings(
     payload: Dict[str, Any], user: Dict[str, Any] = Depends(auth.current_user)
 ) -> Dict[str, Any]:
     raw = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
+    selected = raw.get("ai_model") if isinstance(raw, dict) else None
+    if isinstance(selected, str) and selected.strip() and selected.strip() not in _ai_models():
+        raise HTTPException(status_code=400, detail="该 AI 模型不在后端可用列表中")
     data = user_settings.save(user["username"], raw)
     return {"settings": data, "username": user["username"]}
 
@@ -838,7 +857,40 @@ AI_DEFAULT_MODEL = "sam2:base+"
 
 
 def _ai_models() -> List[str]:
-    return list(AI_DEFAULT_MODELS)
+    """部署方实际安装的模型清单。
+
+    管理端还没有下载/安装动作，所以默认把内置目录视为全部可用；部署方可用
+    ``LABELME_WEB_AI_MODELS``（逗号分隔）或数据库键 ``ai.models`` 收窄成
+    实际下载过的模型。标注页只展示这里返回的条目。
+    """
+    raw = settings_store.get("ai.models", "LABELME_WEB_AI_MODELS", "")
+    if not raw:
+        return list(AI_DEFAULT_MODELS)
+    wanted: List[str] = []
+    for part in raw.replace("\n", ",").split(","):
+        part = part.strip()
+        if part and part not in wanted:
+            wanted.append(part)
+    if not wanted:
+        return list(AI_DEFAULT_MODELS)
+    return [model_id for model_id in AI_DEFAULT_MODELS if model_id in wanted] + [
+        model_id for model_id in wanted if model_id not in AI_DEFAULT_MODELS
+    ]
+
+
+def _available_ai_models() -> List[Dict[str, Any]]:
+    known = {item["id"]: item for item in AI_MODEL_CATALOG}
+    out: List[Dict[str, Any]] = []
+    for model_id in _ai_models():
+        out.append(known.get(model_id, {
+            "id": model_id,
+            "name": model_id,
+            "caps": "后端自定义模型",
+            "note": "部署方安装的自定义模型。",
+            "license": "",
+            "family": "custom",
+        }))
+    return out
 
 
 def _ai_provider() -> str:

@@ -36,6 +36,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "auto_add_label": True,
     "fill_drawing": True,
     "ai_enabled": False,
+    "ai_model": "",                  # 用户在“AI 模型”里选中的模型 id；空 = 用后端默认
 }
 
 BOOL_KEYS = {
@@ -86,6 +87,9 @@ def _clean(payload: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, Any]:
         elif key in ENUMS:
             if isinstance(value, str) and value in ENUMS[key]:
                 result[key] = value
+        elif key == "ai_model":
+            if isinstance(value, str):
+                result[key] = value.strip()[:80]
     return result
 
 
