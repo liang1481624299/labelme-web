@@ -325,6 +325,7 @@
     gap: 26px;
     width: min(520px, 100% - 32px);
     padding: 40px 0 48px;
+    align-content: start;
   }
   .hero-top { margin-bottom: 20px; }
   .hero-title { font-size: 30px; margin-bottom: 12px; }
