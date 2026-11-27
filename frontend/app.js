@@ -803,6 +803,12 @@ function dropDuplicateTail(d) {
 function finishDrawing() {
   const d = state.drawing;
   if (!d) return;
+  if (!state.image) {
+    state.drawing = null;
+    toggleTouchActions();
+    redraw();
+    return;
+  }
   const storedType = d.type === 'circle3' ? 'circle' : d.type;
   const need = MIN_POINTS[storedType] || 1;
   let pts = d.points.slice();
@@ -1807,6 +1813,10 @@ canvas.addEventListener('wheel', (ev) => {
 }, { passive: false });
 
 function handleDrawClick(tool, pt, ev) {
+  if (!state.image) {
+    toast('先打开一张图像');
+    return;
+  }
   // 矩形/直线：既支持按住拖拽，也支持“点一下起点、再点一下终点”
   if (tool === 'rectangle' || tool === 'line') {
     if (!state.drawing) {
@@ -3475,6 +3485,9 @@ async function deleteCurrentImage() {
     state.image = null;
     state.shapes = [];
     state.selected = -1;
+    state.selectedVertex = -1;
+    state.drawing = null;
+    toggleTouchActions();
     await reloadImages();
     redraw();
     showEmpty(state.images.length === 0);
