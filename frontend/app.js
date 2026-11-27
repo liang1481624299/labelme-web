@@ -44,6 +44,25 @@ function round2(v) {
   return Math.round(v * 100) / 100;
 }
 
+const HTTP_STATUS_TEXT = {
+  400: '请求有误，请检查提交内容',
+  401: '登录已过期，请重新登录',
+  403: '没有权限执行这个操作',
+  404: '请求的接口或文件不存在',
+  409: '名称冲突，目标已存在',
+  413: '文件超过上传上限',
+  422: '参数格式不符合要求',
+  429: '请求太频繁，请稍后再试',
+  500: '服务器内部错误',
+  502: '后端服务没有正常响应',
+  503: '服务暂时不可用，请稍后再试',
+  504: '后端响应超时，请稍后再试',
+};
+
+function httpStatusText(status) {
+  return HTTP_STATUS_TEXT[status] || `请求失败（${status}）`;
+}
+
 async function req(method, path, body, isForm) {
   const opts = { method, headers: {}, credentials: 'same-origin' };
   if (body && isForm) {
@@ -61,10 +80,14 @@ async function req(method, path, body, isForm) {
     throw err;
   }
   if (!res.ok) {
-    let detail = `${res.status} ${res.statusText}`;
+    let detail = httpStatusText(res.status);
     try {
       const j = await res.json();
-      if (j && j.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+      if (j && j.detail) {
+        detail = typeof j.detail === 'string'
+          ? j.detail
+          : (Array.isArray(j.detail) ? j.detail.map((d) => d.msg || JSON.stringify(d)).join('；') : JSON.stringify(j.detail));
+      }
     } catch (e) { /* ignore */ }
     const err = new Error(detail);
     err.status = res.status;

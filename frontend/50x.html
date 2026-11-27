@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>服务暂时不可用</title>
+  <style>
+    :root { --bg:#17181c; --panel:#202127; --line:#31333b; --text:#e8eaf0; --faint:#9aa1b0; --danger:#ff7b72; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 28px;
+      background: radial-gradient(900px 480px at 50% -10%, rgba(255,123,114,.10), transparent 70%), var(--bg);
+      color: var(--text); font: 15px/1.65 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    .card {
+      width: min(640px, 100%); padding: 42px 40px 36px; text-align: center;
+      border: 1px solid var(--line); border-radius: 18px; background: var(--panel);
+      box-shadow: 0 24px 70px rgba(0,0,0,.36);
+    }
+    .code { font-size: 58px; line-height: 1; font-weight: 700; letter-spacing: .04em; color: var(--danger); }
+    h1 { margin: 14px 0 6px; font-size: 22px; font-weight: 600; }
+    p { margin: 0 auto; max-width: 460px; color: var(--faint); }
+    .actions { display: flex; justify-content: center; gap: 10px; margin-top: 26px; flex-wrap: wrap; }
+    a {
+      display: inline-flex; align-items: center; justify-content: center; min-width: 116px;
+      padding: 9px 18px; border: 1px solid var(--line); border-radius: 9px;
+      color: var(--text); text-decoration: none; background: #26272e;
+    }
+    a.primary { border-color: rgba(90,169,255,.55); background: rgba(90,169,255,.14); color: #cfe6ff; }
+    .hint { margin-top: 22px; font-size: 12px; color: #707787; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="code">50x</div>
+    <h1>服务暂时不可用</h1>
+    <p>网关没有拿到后端响应。请确认 labelme-web 服务已启动；如果正在升级或重启，稍等片刻再刷新。</p>
+    <div class="actions">
+      <a class="primary" href="/">重新打开</a>
+      <a href="/login">回到登录页</a>
+    </div>
+    <div class="hint">Labelme Web · 502 / 503 / 504</div>
+  </main>
+</body>
+</html>

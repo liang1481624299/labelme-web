@@ -76,7 +76,9 @@ systemctl restart "${SERVICE_NAME}"
 
 # ---------------------------------------------------------------- nginx
 log "安装 NGINX 站点"
-install -m 644 "${SRC_DIR}/deploy/nginx.conf" "${NGINX_SITE}"
+# 50x.html 的 root 也要跟着安装目录走，自定义目录时不能写死 /opt/labelme-web
+sed "s|/opt/labelme-web|${APP_DIR}|g" "${SRC_DIR}/deploy/nginx.conf" > "${NGINX_SITE}"
+chmod 644 "${NGINX_SITE}"
 ln -sf "${NGINX_SITE}" "${NGINX_LINK}"
 nginx -t
 systemctl enable nginx >/dev/null 2>&1 || true

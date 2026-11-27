@@ -99,6 +99,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_error_page(self, code: int) -> None:
+        """后端不可达时给 502 错误页，而不是一行纯文本。"""
+        template = (FRONTEND / "error.html").read_text(encoding="utf-8")
+        title, message = {
+            500: ("服务器出错", "服务端处理请求时发生异常，请稍后重试。"),
+            502: ("网关错误", "后端服务没有正常响应，请确认后端已在 9631 端口启动。"),
+            503: ("服务暂时不可用", "服务暂时不可用，请稍后再试。"),
+            504: ("网关超时", "上游服务响应超时，请稍后再试。"),
+        }.get(code, ("请求失败", "请求没有完成，请稍后重试。"))
+        body = (template
+                .replace("{{CODE}}", str(code))
+                .replace("{{TITLE}}", title)
+                .replace("{{MESSAGE}}", message)
+                .replace("{{KIND}}", "server" if code >= 500 else "client"))
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
+
     # ------------------------------------------------------------------ 代理
     def _proxy(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
@@ -119,7 +139,8 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as exc:
             resp = exc
         except Exception as exc:  # 后端没起来
-            self._send_text(502, "backend unreachable: %s\n先启动后端：python -m uvicorn backend.app:app --port 9631" % exc)
+            self._send_error_page(502)
+            sys.stderr.write("[dev] backend unreachable: %s\n" % exc)
             return
 
         payload = resp.read()

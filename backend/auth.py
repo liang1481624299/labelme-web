@@ -813,12 +813,5 @@ def admin_page(user: Optional[sqlite3.Row]) -> Response:
     if user is None:
         return RedirectResponse("/login?next=/admin", status_code=302)
     if not user["enabled"] or user["role"] != "admin":
-        return Response(
-            "<!doctype html><meta charset=utf-8><title>403</title>"
-            "<body style=\"font:14px/1.6 system-ui;background:#1e1e1e;color:#ddd;padding:48px\">"
-            "<h2>403 · 需要管理员权限</h2><p>当前账号无权访问 /admin。</p>"
-            "<p><a style=\"color:#4ea1d3\" href=\"/\">回到标注页</a></p>",
-            status_code=403,
-            media_type="text/html",
-        )
+        raise HTTPException(status_code=403, detail="需要管理员权限")
     return FileResponse(str(BASE_DIR / "frontend" / "admin.html"), media_type="text/html")

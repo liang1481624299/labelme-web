@@ -18,6 +18,7 @@ API 仍保留 ``/api/sessions/{session}/...`` 这样前端不用重写；用户�
 from __future__ import annotations
 
 import json
+import html as html_lib
 import os
 import re
 import urllib.parse
@@ -27,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import Body, FastAPI, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -1068,22 +1069,99 @@ def page_admin(request: Request) -> Response:
 
 
 # ---------------------------------------------------------------- static frontend
+ERROR_COPY = {
+    400: ("请求有误", "提交的内容不完整或格式不正确，返回上一页修改后再试。"),
+    401: ("需要登录", "登录状态已失效，请重新登录后再操作。"),
+    403: ("没有权限", "当前账号没有访问这个页面或执行这个操作的权限。"),
+    404: ("页面不存在", "地址可能输错了，或者对应的工程、文件已经被移动。"),
+    405: ("请求方式不对", "这个地址不支持当前的请求方式，请从页面上的入口重新进入。"),
+    409: ("名称冲突", "目标已经存在，换一个名字或换一个位置再试。"),
+    413: ("内容太大", "上传的文件超过当前上限，管理员可以在“系统设置”里调整。"),
+    422: ("参数校验失败", "提交的参数格式不符合要求，请检查后重试。"),
+    429: ("请求太频繁", "请稍等一分钟再试。"),
+    500: ("服务器出错", "服务端处理请求时发生异常，请稍后重试；持续出现请联系管理员。"),
+    502: ("网关错误", "后端服务没有正常响应，请确认服务已启动。"),
+    503: ("服务暂时不可用", "服务正在维护，或依赖的外部服务暂时不可用，请稍后再试。"),
+    504: ("网关超时", "上游服务响应超时，请稍后再试。"),
+}
+
+
+def render_error_page(code: int) -> HTMLResponse:
+    """页面路径的 4xx/5xx 统一错误页；API 仍走 JSON。"""
+    title, message = ERROR_COPY.get(
+        code,
+        ("请求失败" if code < 500 else "服务异常", "请求没有完成，请稍后重试。"),
+    )
+    template = (FRONTEND_DIR / "error.html").read_text(encoding="utf-8")
+    body = (template
+            .replace("{{CODE}}", str(code))
+            .replace("{{TITLE}}", html_lib.escape(title))
+            .replace("{{MESSAGE}}", html_lib.escape(message))
+            .replace("{{KIND}}", "server" if code >= 500 else "client"))
+    return HTMLResponse(body, status_code=code)
+
+
 @app.exception_handler(StarletteHTTPException)
 async def page_http_error(request: Request, exc: StarletteHTTPException) -> Response:
-    """API 仍返回 JSON；页面路径 404 时给一张独立错误页，不再回退到首页。"""
-    if (exc.status_code == 404 and not request.url.path.startswith("/api/")
-            and not Path(request.url.path).suffix):
-        page = FRONTEND_DIR / "404.html"
-        if page.is_file():
-            return FileResponse(str(page), status_code=404, media_type="text/html")
-    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+    """API 仍返回 JSON；页面路径的 4xx/5xx 给统一错误页，不再回退到首页。"""
+    path = request.url.path
+    if path.startswith("/api/"):
+        return JSONResponse(
+            {"detail": exc.detail, "status": exc.status_code},
+            status_code=exc.status_code, headers=exc.headers,
+        )
+    if Path(path).suffix:
+        # 缺失的 .js/.css/图片等资源不要回一整页 HTML
+        return Response("not found", status_code=exc.status_code, media_type="text/plain; charset=utf-8")
+    if 400 <= exc.status_code < 600:
+        if exc.status_code == 404 and (FRONTEND_DIR / "404.html").is_file():
+            return FileResponse(str(FRONTEND_DIR / "404.html"), status_code=404, media_type="text/html")
+        return render_error_page(exc.status_code)
+    return JSONResponse(
+        {"detail": exc.detail, "status": exc.status_code},
+        status_code=exc.status_code, headers=exc.headers,
+    )
+
+
+@app.exception_handler(Exception)
+async def page_unhandled_error(request: Request, exc: Exception) -> Response:
+    """未捕获异常：API 给 JSON 500，页面给 500 错误页，不把 traceback 吐给浏览器。"""
+    import traceback
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"detail": "服务器内部错误", "status": 500}, status_code=500)
+    return render_error_page(500)
+
+
+def _iter_api_routes(routes):
+    """展开 FastAPI 的 _IncludedRouter，拿到真正带 path 的路由。"""
+    for route in routes:
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            yield from _iter_api_routes(inner.routes)
+            continue
+        yield route
 
 
 @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
                include_in_schema=False)
-def api_not_found(rest: str) -> Response:
-    """未匹配的 /api/* 一律 JSON 404，不能被前端静态挂载吞成页面。"""
-    return JSONResponse({"detail": "接口不存在"}, status_code=404)
+def api_not_found(request: Request, rest: str) -> Response:
+    """未匹配的 /api/* 一律 JSON：路径存在但方法不对给 405，其余 404。"""
+    path = request.url.path
+    allowed: set[str] = set()
+    for route in _iter_api_routes(app.router.routes):
+        if not getattr(route, "path", "").startswith("/api/"):
+            continue
+        if getattr(route, "endpoint", None) is api_not_found:
+            continue
+        regex = getattr(route, "path_regex", None)
+        if regex is not None and regex.match(path):
+            allowed.update(getattr(route, "methods", None) or ())
+    if allowed:
+        allow = ", ".join(sorted(allowed))
+        return JSONResponse({"detail": "请求方式不允许", "status": 405},
+                            status_code=405, headers={"Allow": allow})
+    return JSONResponse({"detail": "接口不存在", "status": 404}, status_code=404)
 
 
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

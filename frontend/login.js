@@ -4,6 +4,25 @@
 
 const $ = (id) => document.getElementById(id);
 
+const HTTP_STATUS_TEXT = {
+  400: '请求有误，请检查账号和密码',
+  401: '账号或密码不正确',
+  403: '没有权限执行这个操作',
+  404: '请求的接口不存在',
+  409: '账号已存在',
+  413: '提交内容超过上限',
+  422: '账号或密码格式不符合要求',
+  429: '尝试太频繁，请稍后再试',
+  500: '服务器内部错误',
+  502: '后端服务没有正常响应',
+  503: '服务暂时不可用，请稍后再试',
+  504: '后端响应超时，请稍后再试',
+};
+
+function httpStatusText(status) {
+  return HTTP_STATUS_TEXT[status] || `请求失败（${status}）`;
+}
+
 const params = new URLSearchParams(location.search);
 let next = params.get('next') || '/';
 if (!next.startsWith('/') || next.startsWith('//')) next = '/';
@@ -55,7 +74,7 @@ async function submit(event) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const detail = typeof data.detail === 'string' ? data.detail : `请求失败（${res.status}）`;
+      const detail = typeof data.detail === 'string' ? data.detail : httpStatusText(res.status);
       showError(detail);
       return;
     }
