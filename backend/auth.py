@@ -800,6 +800,103 @@ def admin_delete_user(
     return {"deleted": user_id}
 
 
+@admin_router.post("/users/batch-delete")
+def admin_batch_delete_users(
+    payload: Dict[str, Any], admin: Dict[str, Any] = Depends(admin_guard)
+) -> Dict[str, Any]:
+    """批量删号：按 id 或用户名选择，整批要么全部校验通过、要么不删。
+
+    规则跟单个删除一致：不能删自己，也不能把最后一个启用管理员删掉。
+    只删账号和登录态；data/ 下该账号的工程与标注文件原样保留。
+    """
+    raw_ids = payload.get("ids") or []
+    raw_names = payload.get("usernames") or []
+    if not isinstance(raw_ids, list) or not isinstance(raw_names, list):
+        raise HTTPException(status_code=400, detail="ids / usernames 必须是数组")
+
+    ids: List[int] = []
+    for value in raw_ids:
+        try:
+            user_id = int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="账号 id 必须是整数")
+        if user_id <= 0:
+            raise HTTPException(status_code=400, detail="账号 id 不合法")
+        ids.append(user_id)
+
+    names: List[str] = []
+    for value in raw_names:
+        if not isinstance(value, str):
+            raise HTTPException(status_code=400, detail="用户名必须是字符串")
+        name = value.strip()
+        if name:
+            names.append(name)
+
+    ids = sorted(set(ids))
+    names = list(dict.fromkeys(names))
+    if not ids and not names:
+        raise HTTPException(status_code=400, detail="请选择要删除的账号")
+    if len(ids) + len(names) > BATCH_MAX:
+        raise HTTPException(status_code=400, detail=f"一次最多删除 {BATCH_MAX} 个账号")
+
+    with _LOCK:
+        with connect() as conn:
+            rows_by_id: Dict[int, sqlite3.Row] = {}
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                for row in conn.execute(
+                    f"SELECT * FROM users WHERE id IN ({placeholders})", ids
+                ).fetchall():
+                    rows_by_id[row["id"]] = row
+            if names:
+                placeholders = ",".join("?" for _ in names)
+                for row in conn.execute(
+                    f"SELECT * FROM users WHERE username IN ({placeholders})", names
+                ).fetchall():
+                    rows_by_id[row["id"]] = row
+
+            missing_ids = [user_id for user_id in ids if user_id not in rows_by_id]
+            found_names = {row["username"].lower() for row in rows_by_id.values()}
+            missing_names = [name for name in names if name.lower() not in found_names]
+
+            found = list(rows_by_id.values())
+            if not found:
+                return {
+                    "deleted": [],
+                    "count": 0,
+                    "deleted_users": [],
+                    "missing_ids": missing_ids,
+                    "missing_usernames": missing_names,
+                }
+
+            if any(row["id"] == admin["id"] for row in found):
+                raise HTTPException(status_code=400, detail="批量删除里包含当前登录账号，不能删除自己")
+
+            active_admins = conn.execute(
+                "SELECT COUNT(*) AS n FROM users WHERE role='admin' AND enabled=1"
+            ).fetchone()["n"]
+            removing_admins = sum(
+                1 for row in found if row["role"] == "admin" and row["enabled"]
+            )
+            if active_admins - removing_admins <= 0:
+                raise HTTPException(status_code=400, detail="至少要保留一个启用的管理员")
+
+            deleted_users = []
+            for row in found:
+                _drop_sessions_conn(conn, row["id"])
+                conn.execute("DELETE FROM users WHERE id=?", (row["id"],))
+                deleted_users.append({"id": row["id"], "username": row["username"]})
+            conn.commit()
+
+    return {
+        "deleted": [row["id"] for row in deleted_users],
+        "count": len(deleted_users),
+        "deleted_users": deleted_users,
+        "missing_ids": missing_ids,
+        "missing_usernames": missing_names,
+    }
+
+
 @admin_router.get("/settings")
 def admin_settings(admin: Dict[str, Any] = Depends(admin_guard)) -> Dict[str, Any]:
     return {

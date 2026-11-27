@@ -6,6 +6,8 @@
 const $ = (id) => document.getElementById(id);
 let me = null;
 let csrfToken = '';
+let currentUsers = [];
+let selectedUserIds = new Set();
 
 const HTTP_STATUS_TEXT = {
   400: '请求有误，请检查提交内容',
@@ -58,15 +60,62 @@ function fmt(value) {
   return value ? String(value) : '—';
 }
 
+function selectableUsers() {
+  return currentUsers.filter((user) => !(me && Number(user.id) === Number(me.id)));
+}
+
+function syncUserSelection() {
+  const countEl = $('userSelectedCount');
+  const btn = $('btnBulkDelete');
+  const allBox = $('selectAllUsers');
+  if (!countEl || !btn || !allBox) return;
+  const all = selectableUsers();
+  const chosen = all.filter((user) => selectedUserIds.has(Number(user.id)));
+  countEl.textContent = `已选 ${chosen.length} 个`;
+  btn.disabled = chosen.length === 0;
+  allBox.disabled = all.length === 0;
+  allBox.checked = all.length > 0 && chosen.length === all.length;
+  allBox.indeterminate = chosen.length > 0 && chosen.length < all.length;
+}
+
+function setAllUsersSelected(checked) {
+  selectableUsers().forEach((user) => {
+    const id = Number(user.id);
+    if (checked) selectedUserIds.add(id);
+    else selectedUserIds.delete(id);
+  });
+  renderUsers(currentUsers);
+}
+
 function renderUsers(users) {
+  currentUsers = users;
+  const selectableIds = new Set(selectableUsers().map((user) => Number(user.id)));
+  selectedUserIds = new Set(
+    [...selectedUserIds].filter((id) => selectableIds.has(Number(id)))
+  );
   const box = $('userRows');
   box.innerHTML = '';
   users.forEach((user) => {
     const row = document.createElement('tr');
 
     const nameCell = document.createElement('td');
-    nameCell.textContent = user.username;
-    const isMe = me && user.id === me.id;
+    const selectBox = document.createElement('input');
+    selectBox.type = 'checkbox';
+    selectBox.className = 'user-select';
+    selectBox.value = String(user.id);
+    selectBox.disabled = !selectableIds.has(Number(user.id));
+    selectBox.checked = selectedUserIds.has(Number(user.id));
+    selectBox.setAttribute('aria-label', `选择账号 ${user.username}`);
+    selectBox.addEventListener('change', () => {
+      const id = Number(user.id);
+      if (selectBox.checked) selectedUserIds.add(id);
+      else selectedUserIds.delete(id);
+      syncUserSelection();
+    });
+    nameCell.appendChild(selectBox);
+    nameCell.appendChild(document.createTextNode(' '));
+    nameCell.appendChild(document.createTextNode(user.username));
+    const isMe = me && Number(user.id) === Number(me.id);
     if (isMe) {
       const badge = document.createElement('span');
       badge.className = 'tag';
@@ -159,6 +208,7 @@ function renderUsers(users) {
     row.append(nameCell, sourceCell, roleCell, stateCell, createdCell, loginCell, actionCell);
     box.appendChild(row);
   });
+  syncUserSelection();
 }
 
 function renderProjects(projects) {
@@ -287,6 +337,34 @@ $('allowRegistration').addEventListener('change', async (event) => {
   }
 });
 
+$('selectAllUsers').addEventListener('change', (event) => {
+  setAllUsersSelected(event.target.checked);
+});
+
+$('btnBulkDelete').addEventListener('click', async () => {
+  const chosen = currentUsers.filter((user) => selectedUserIds.has(Number(user.id)));
+  if (!chosen.length) return;
+  const names = chosen.slice(0, 5).map((user) => user.username).join('、')
+    + (chosen.length > 5 ? ' 等' : '');
+  if (!confirm(`确认批量删除 ${chosen.length} 个账号（${names}）？\n登录态会立即失效；data/ 里的工程与标注文件不会删除。`)) return;
+  const btn = $('btnBulkDelete');
+  btn.disabled = true;
+  try {
+    const res = await api('POST', '/api/admin/users/batch-delete', {
+      ids: chosen.map((user) => user.id),
+    });
+    selectedUserIds.clear();
+    await load();
+    const missing = (res.missing_ids || []).length;
+    msg($('listMsg'),
+      `已删除 ${res.count} 个账号${missing ? `，${missing} 个 id 已不存在` : ''}`, true);
+  } catch (err) {
+    msg($('listMsg'), err.message, false);
+  } finally {
+    syncUserSelection();
+  }
+});
+
 $('createForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const username = $('newUsername').value.trim();
@@ -353,6 +431,36 @@ $('btnBatchExport').addEventListener('click', () => {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+});
+
+$('batchDeleteForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const names = $('batchDeleteNames').value
+    .split(/[\s,，、;；]+/)
+    .map((name) => name.trim())
+    .filter(Boolean);
+  if (!names.length) {
+    msg($('batchDeleteMsg'), '请先填要删除的账号', false);
+    return;
+  }
+  if (!confirm(`确认批量删除 ${names.length} 个账号？\n登录态会立即失效；data/ 里的工程与标注文件不会删除。`)) return;
+  const btn = $('btnBatchDelete');
+  btn.disabled = true;
+  try {
+    const res = await api('POST', '/api/admin/users/batch-delete', { usernames: names });
+    const missing = res.missing_usernames || [];
+    msg($('batchDeleteMsg'),
+      `已删除 ${res.count} 个账号${missing.length ? `；未找到：${missing.join('、')}` : ''}`,
+      res.count > 0);
+    if (res.count > 0) {
+      $('batchDeleteNames').value = '';
+      await load();
+    }
+  } catch (err) {
+    msg($('batchDeleteMsg'), err.message, false);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 $('projectForm').addEventListener('submit', async (event) => {

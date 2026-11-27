@@ -413,6 +413,16 @@ html, body {
   font: 13px/1.4 inherit;
   min-width: 160px;
 }
+.form-row textarea {
+  padding: 7px 9px;
+  background: #1b1b1b;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: 13px/1.4 inherit;
+  min-height: 72px;
+  resize: vertical;
+}
 .switch { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 
 .admin-msg { font-size: 13px; margin-top: 10px; white-space: pre-wrap; }
@@ -541,6 +551,7 @@ html, body {
 .spacer { margin-left: auto; }
 
 .fs-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.fs-bar .who { color: var(--text-faint); font-size: 12px; }
 .fs-crumb { font: 12px/1.4 ui-monospace, Consolas, monospace; color: var(--text-faint); }
 .fs-name {
   background: transparent;

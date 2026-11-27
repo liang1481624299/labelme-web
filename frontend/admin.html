@@ -27,7 +27,7 @@
       <div class="nav-group">账号与权限</div>
       <button class="nav-item active" data-view="overview" type="button"><span class="ico">▦</span>概览</button>
       <button class="nav-item" data-view="accounts" type="button"><span class="ico">👥</span>账号管理</button>
-      <button class="nav-item" data-view="batch" type="button"><span class="ico">#</span>批量创号</button>
+      <button class="nav-item" data-view="batch" type="button"><span class="ico">#</span>批量账号</button>
 
       <div class="nav-group">身份接入</div>
       <button class="nav-item" data-view="ldap" type="button"><span class="ico">🔐</span>LDAP 设置</button>
@@ -86,7 +86,7 @@
               <span><b>新建 / 管理账号</b><small>改角色、启停、重置密码</small></span><em>›</em>
             </button>
             <button class="quick-item" data-goto="batch" type="button">
-              <span><b>批量创号</b><small>生成 8 位数字账号并导出 CSV</small></span><em>›</em>
+              <span><b>批量账号</b><small>批量创号、删号与导出 CSV</small></span><em>›</em>
             </button>
             <button class="quick-item" data-goto="ldap" type="button">
               <span><b>LDAP / AD 接入</b><small>让学校账号直接登录</small></span><em>›</em>
@@ -141,6 +141,15 @@
             </label>
           </header>
           <div class="panel-body">
+            <div class="fs-bar">
+              <label class="switch">
+                <input type="checkbox" id="selectAllUsers" />
+                全选
+              </label>
+              <span class="who" id="userSelectedCount">已选 0 个</span>
+              <span class="spacer"></span>
+              <button class="btn btn-sm btn-danger" id="btnBulkDelete" type="button" disabled>批量删除选中</button>
+            </div>
             <table class="table">
               <thead>
                 <tr><th>账号</th><th>来源</th><th>角色</th><th>状态</th><th>创建时间</th><th>最后登录</th><th>操作</th></tr>
@@ -152,15 +161,15 @@
         </section>
       </section>
 
-      <!-- ============================================================ 批量创号 -->
+      <!-- ============================================================ 批量账号 -->
       <section class="page" data-page="batch" hidden>
         <div class="page-head">
-          <div class="crumb">账号与权限 <i>›</i> 批量创号</div>
-          <h2>批量创号</h2>
-          <p>按顺序生成 8 位数字账号，密码同账号，创建后立刻导出。</p>
+          <div class="crumb">账号与权限 <i>›</i> 批量账号</div>
+          <h2>批量账号</h2>
+          <p>批量生成 8 位数字账号，或按账号列表批量删号。</p>
         </div>
         <section class="panel">
-          <header>生成账号</header>
+          <header>批量创号</header>
           <div class="panel-body">
             <form class="form-row" id="batchForm">
               <label>数量
@@ -175,6 +184,19 @@
             <p class="hint">账号名 = 8 位数字 ID，密码默认 = 同一个 ID（纯数字）。明文密码只显示这一次，库里只存 bcrypt 哈希。</p>
             <div class="admin-msg" id="batchMsg"></div>
             <pre class="batch-out" id="batchOut" hidden></pre>
+          </div>
+        </section>
+        <section class="panel">
+          <header>批量删号</header>
+          <div class="panel-body">
+            <form class="form-row" id="batchDeleteForm">
+              <label>账号列表（一行一个 / 逗号分隔）
+                <textarea id="batchDeleteNames" rows="4" placeholder="10000001,10000002,10000003" style="min-width:360px"></textarea>
+              </label>
+              <button class="btn btn-danger" id="btnBatchDelete" type="submit">批量删除</button>
+            </form>
+            <p class="hint">只删除账号和登录态；data/ 下该账号的工程与标注文件会保留。不能删除自己，也不能删掉最后一个启用管理员。</p>
+            <div class="admin-msg" id="batchDeleteMsg"></div>
           </div>
         </section>
       </section>
