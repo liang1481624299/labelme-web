@@ -421,6 +421,46 @@ const PAGES = ['overview', 'accounts', 'batch', 'ldap', 'sso', 'projects', 'file
 const loadedViews = new Set();
 let navReady = false;
 
+/* 窄屏 LuCI 式抽屉：汉堡按钮、遮罩、关闭按钮 */
+const adminMenuBtn = $('btnAdminMenu');
+const adminMenuClose = $('btnAdminMenuClose');
+const adminMenuBackdrop = $('adminMenuBackdrop');
+const adminMain = document.querySelector('.admin-main');
+const adminMobile = window.matchMedia('(max-width: 980px)');
+
+function openAdminMenu() {
+  if (!adminMobile.matches) return;
+  document.body.classList.add('admin-menu-open');
+  adminMenuBtn.setAttribute('aria-expanded', 'true');
+  adminMenuBackdrop.hidden = false;
+  if (adminMain) adminMain.inert = true;
+  adminMenuClose.focus();
+}
+
+function closeAdminMenu(restoreFocus) {
+  const wasOpen = document.body.classList.contains('admin-menu-open');
+  document.body.classList.remove('admin-menu-open');
+  adminMenuBtn.setAttribute('aria-expanded', 'false');
+  adminMenuBackdrop.hidden = true;
+  if (adminMain) adminMain.inert = false;
+  if (wasOpen && restoreFocus) adminMenuBtn.focus();
+}
+
+adminMenuBtn.addEventListener('click', openAdminMenu);
+adminMenuClose.addEventListener('click', () => closeAdminMenu(true));
+adminMenuBackdrop.addEventListener('click', () => closeAdminMenu(true));
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && document.body.classList.contains('admin-menu-open')) {
+    event.preventDefault();
+    closeAdminMenu(true);
+  }
+});
+const watchAdminMobile = (event) => {
+  if (!event.matches) closeAdminMenu(false);
+};
+if (adminMobile.addEventListener) adminMobile.addEventListener('change', watchAdminMobile);
+else if (adminMobile.addListener) adminMobile.addListener(watchAdminMobile);
+
 function showView(name) {
   if (!PAGES.includes(name)) name = 'overview';
   document.querySelectorAll('.nav-item').forEach((tab) => {
@@ -455,6 +495,7 @@ function showView(name) {
     else history.replaceState(null, '', '#' + name);
   }
   navReady = true;
+  closeAdminMenu(false);
 }
 
 document.querySelectorAll('.nav-item').forEach((tab) => {

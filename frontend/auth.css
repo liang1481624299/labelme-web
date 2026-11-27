@@ -279,6 +279,8 @@ html, body {
   color: #6f6f77;
 }
 
+.admin-menu-btn, .admin-menu-close, .admin-menu-backdrop { display: none; }
+
 .admin-main { min-width: 0; display: flex; flex-direction: column; }
 
 .admin-top {
@@ -551,23 +553,154 @@ html, body {
 }
 .fs-name:hover { text-decoration: underline; }
 
+/* 窄屏管理面板：LuCI 式左上角汉堡菜单 + 左侧抽屉，正文占满屏幕 */
 @media (max-width: 980px) {
-  .admin-shell { grid-template-columns: 1fr; }
+  .admin-shell { display: block; min-height: 100dvh; }
+
   .admin-side {
-    position: static;
-    height: auto;
-    border-right: 0;
-    border-bottom: 1px solid #2b2b2e;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 70;
+    width: min(84vw, 336px);
+    height: 100dvh;
+    padding:
+      calc(10px + env(safe-area-inset-top))
+      12px
+      calc(10px + env(safe-area-inset-bottom));
+    border-right: 1px solid #2b2b2e;
+    border-bottom: 0;
+    box-shadow: 16px 0 48px rgba(0, 0, 0, .42);
+    overflow: hidden;
+    transform: translateX(-100%);
+    transition: transform .22s ease;
+  }
+  body.admin-menu-open .admin-side { transform: translateX(0); }
+
+  .admin-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: rgba(0, 0, 0, .56);
+    -webkit-backdrop-filter: blur(2px);
+  }
+  body.admin-menu-open .admin-menu-backdrop:not([hidden]) { display: block; }
+  body.admin-menu-open { overflow: hidden; }
+
+  .admin-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    margin-right: 2px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 7px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .admin-menu-btn .bars {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    width: 21px;
+    height: 15px;
+  }
+  .admin-menu-btn .bars i {
+    display: block;
+    width: 100%;
+    height: 2px;
+    border-radius: 2px;
+    background: #d4d4d4;
+  }
+  .admin-menu-btn:active { background: #2d2d30; }
+
+  .admin-menu-close {
+    display: grid;
+    place-items: center;
+    position: absolute;
+    top: calc(8px + env(safe-area-inset-top));
+    right: 8px;
+    z-index: 2;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    color: #a9a9b1;
+    font: 24px/1 inherit;
+    cursor: pointer;
+  }
+  .admin-menu-close:active { background: #2d2d30; color: #fff; }
+
+  .admin-brand { padding: 2px 44px 12px 8px; }
+  .admin-search { margin: 0 4px 10px; }
+  .admin-search input { min-height: 44px; font-size: 16px; }
+
+  .admin-nav {
+    display: block;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     padding-bottom: 6px;
   }
-  .admin-side-foot { display: none; }
-  .admin-nav { display: flex; flex-wrap: wrap; gap: 2px; }
-  .nav-group { width: 100%; margin: 10px 10px 2px; }
-  .nav-item { width: auto; }
-  .admin-content { padding: 22px 16px 60px; }
-  .admin-top { padding: 12px 16px; flex-wrap: wrap; }
-  .admin-top .who { order: 5; width: 100%; }
+  .nav-group {
+    width: auto;
+    margin: 14px 10px 4px;
+    font-size: 12px;
+  }
+  .nav-item {
+    width: 100%;
+    min-height: 46px;
+    padding: 10px;
+    margin-bottom: 2px;
+    font-size: 14px;
+  }
+  .nav-item .ico { width: 22px; font-size: 15px; }
+  .admin-side-foot { display: flex; }
+
+  .admin-main { min-height: 100dvh; }
+  .admin-top {
+    min-height: calc(56px + env(safe-area-inset-top));
+    padding:
+      calc(6px + env(safe-area-inset-top))
+      10px
+      6px;
+    gap: 8px;
+    flex-wrap: nowrap;
+  }
+  .admin-top .top-title { font-size: 16px; color: #e6e6e8; }
+  .admin-top .who { display: none; }
+  .admin-top #btnBack { display: none; }
+
+  .admin-content {
+    max-width: none;
+    padding: 18px 14px calc(32px + env(safe-area-inset-bottom));
+  }
+  .page-head { margin-bottom: 16px; }
+  .page-head h2 { font-size: 21px; }
+  .page-head p { font-size: 12px; }
+  .panel-body { overflow-x: auto; }
+  .table { min-width: 640px; }
   .table th:nth-child(4), .table td:nth-child(4) { display: none; }
+  .form-row { align-items: stretch; }
+  .form-row label { flex: 1 1 100%; min-width: 0; }
+  .form-row input, .form-row select { min-width: 0; }
+  .config-grid { grid-template-columns: minmax(0, 1fr); }
+  .config-grid .check { grid-column: auto; }
+  .config-actions { flex-wrap: wrap; }
+  .provider-grid, .model-grid { grid-template-columns: minmax(0, 1fr); }
+  .panel > header { flex-wrap: wrap; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-side { transition: none; }
 }
 
 /* iPad / 触屏 Windows：登录和后台也按手指尺寸放大 */
@@ -583,6 +716,9 @@ html, body {
   .form-row input, .form-row select, .config-grid input, .config-grid select, .config-grid textarea,
   .admin-search input { min-height: 44px; font-size: 16px; }
   .nav-item { min-height: 44px; }
-  .admin-top { padding: 10px 16px; }
   .table th, .table td { padding-top: 10px; padding-bottom: 10px; }
+}
+
+@media (any-pointer: coarse) and (min-width: 981px) {
+  .admin-top { padding: 10px 16px; }
 }

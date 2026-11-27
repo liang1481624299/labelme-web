@@ -8,7 +8,7 @@
 </head>
 <body class="admin-body">
 <div class="admin-shell">
-  <aside class="admin-side">
+  <aside class="admin-side" id="adminSide">
     <div class="admin-brand">
       <span class="logo">L</span>
       <div>
@@ -16,6 +16,7 @@
         <span>管理后台</span>
       </div>
     </div>
+    <button class="admin-menu-close" id="btnAdminMenuClose" type="button" aria-label="关闭菜单">×</button>
 
     <div class="admin-search">
       <span class="search-ico">⌕</span>
@@ -50,6 +51,9 @@
 
   <main class="admin-main">
     <header class="admin-top">
+      <button class="admin-menu-btn" id="btnAdminMenu" type="button" aria-label="打开菜单" aria-controls="adminSide" aria-expanded="false">
+        <span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>
+      </button>
       <span class="top-title">管理后台</span>
       <span class="spacer"></span>
       <span class="who" id="who">—</span>
@@ -517,6 +521,7 @@
     </div>
   </main>
 </div>
+<div class="admin-menu-backdrop" id="adminMenuBackdrop" hidden></div>
 <script src="admin.js"></script>
 </body>
 </html>
