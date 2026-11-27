@@ -3,50 +3,80 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#07090f" />
   <title>登录 · Labelme</title>
   <link rel="stylesheet" href="auth.css" />
+  <link rel="stylesheet" href="login.css" />
   <link rel="stylesheet" href="mobile-gate.css" />
 </head>
 <body class="auth-body">
-  <div class="auth-card">
-    <div class="auth-brand">
-      <span class="dot"></span>
-      <span>Labelme</span>
-      <span class="ver">7.11.0</span>
-    </div>
+  <div class="auth-sky" aria-hidden="true">
+    <span class="sky-blob b1"></span>
+    <span class="sky-blob b2"></span>
+    <span class="sky-grid"></span>
+  </div>
 
-    <div class="auth-tabs">
-      <button class="auth-tab active" data-tab="login" type="button">登录</button>
-      <button class="auth-tab" data-tab="register" type="button">注册</button>
-    </div>
-
-    <form id="authForm" autocomplete="on" novalidate>
-      <label class="field">
-        <span>账号</span>
-        <input id="username" name="username" type="text" autocomplete="username"
-               placeholder="2–32 位，中英文 / 数字 / _ - ." required />
-      </label>
-      <label class="field">
-        <span>密码</span>
-        <input id="password" name="password" type="password" autocomplete="current-password"
-               placeholder="至少 8 位" required />
-      </label>
-      <p class="auth-hint" id="registerHint" hidden>
-        第一次注册的账号会自动成为管理员；之后注册的都是普通标注员（需管理员启用后可用）。
+  <div class="auth-layout">
+    <section class="auth-hero">
+      <div class="hero-top">
+        <span class="hero-logo">LM</span>
+        <span class="hero-site" id="heroSite">Labelme</span>
+      </div>
+      <h1 class="hero-title">一个账号，<br /><span>标注全流程</span></h1>
+      <p class="hero-sub">
+        图像标注、工程协作、结果导出都在同一个工作台里；账号由实训室身份中心统一托管，登一次即可通行。
       </p>
-      <p class="auth-hint" id="ldapHint" hidden></p>
-      <div class="auth-error" id="authError" hidden></div>
-      <button class="auth-submit" id="authSubmit" type="submit">登录</button>
-    </form>
+      <ul class="hero-points">
+        <li><b>统一登录</b>Casdoor / OIDC 单点认证，一次授权全线可用</li>
+        <li><b>账号沿用</b>原有本地账号直接绑定，历史工程与标注不留失</li>
+        <li><b>权限分级</b>管理员与标注员分离，账号按需启用</li>
+      </ul>
+      <p class="hero-meta">GDUE-CS-802D · 图像标注平台</p>
+    </section>
 
-    <div class="auth-sso" id="ssoBox" hidden>
-      <span class="auth-sso-or">或</span>
-      <button class="auth-sso-btn" id="ssoBtn" type="button"></button>
-    </div>
+    <main class="auth-panel">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <span class="dot"></span>
+          <span>Labelme</span>
+          <span class="ver">7.11.0</span>
+        </div>
 
-    <p class="auth-foot">
-      登录后才能进入标注页；账号由管理员统一维护。
-    </p>
+        <div class="auth-tabs">
+          <button class="auth-tab active" data-tab="login" type="button">登录</button>
+          <button class="auth-tab" data-tab="register" type="button">注册</button>
+        </div>
+
+        <form id="authForm" autocomplete="on" novalidate>
+          <label class="field">
+            <span>账号</span>
+            <input id="username" name="username" type="text" autocomplete="username"
+                   placeholder="2–32 位，中英文 / 数字 / _ - ." required />
+          </label>
+          <label class="field">
+            <span>密码</span>
+            <input id="password" name="password" type="password" autocomplete="current-password"
+                   placeholder="至少 8 位" required />
+          </label>
+          <p class="auth-hint" id="registerHint" hidden>
+            第一次注册的账号会自动成为管理员；之后注册的都是普通标注员（需管理员启用后可用）。
+          </p>
+          <p class="auth-hint" id="ldapHint" hidden></p>
+          <div class="auth-error" id="authError" hidden></div>
+          <button class="auth-submit" id="authSubmit" type="submit">登录</button>
+        </form>
+
+        <div class="auth-sso" id="ssoBox" hidden>
+          <span class="auth-sso-or">或</span>
+          <button class="auth-sso-btn" id="ssoBtn" type="button"></button>
+        </div>
+
+        <p class="auth-foot">
+          登录后才能进入标注页；账号由管理员统一维护。
+        </p>
+      </div>
+      <p class="auth-legal">© 2026 GDUE-CS-802D · 账号问题请联系实训室管理员</p>
+    </main>
   </div>
   <script src="login.js"></script>
   <script src="mobile-gate.js"></script>

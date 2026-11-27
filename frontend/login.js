@@ -131,6 +131,9 @@ if (params.get('sso_error')) {
     document.title = `登录 · ${siteName}`;
     const brand = document.querySelector('.auth-brand span:not(.dot):not(.ver)');
     if (brand) brand.textContent = siteName;
+    /* 左侧品牌区标题同样跟随站点名，避免两边不一致 */
+    const heroSite = $('heroSite');
+    if (heroSite) heroSite.textContent = siteName;
     const ldap = (data && data.ldap) || {};
     const sso = (data && data.sso) || {};
     if (sso.enabled) {
