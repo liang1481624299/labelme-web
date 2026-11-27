@@ -56,8 +56,8 @@ let touchUi = !!(TOUCH_QUERY && TOUCH_QUERY.matches) || (navigator.maxTouchPoint
 if (TOUCH_QUERY && TOUCH_QUERY.addEventListener) {
   TOUCH_QUERY.addEventListener('change', (ev) => { touchUi = ev.matches || (navigator.maxTouchPoints || 0) > 0; });
 }
-function hitSlopPx(px) {
-  return (touchUi ? Math.max(px, 15) : px) / view.zoom;
+function hitSlopPx(px, touchMin = 15) {
+  return (touchUi ? Math.max(px, touchMin) : px) / view.zoom;
 }
 
 const HTTP_STATUS_TEXT = {
@@ -622,7 +622,7 @@ function hitTestShape(pt) {
 }
 
 function hitTestVertex(shape, pt) {
-  const tol = hitSlopPx(7);
+  const tol = hitSlopPx(7, 22);
   const p = Array.isArray(pt) ? pt : [pt.x, pt.y];
   let best = -1;
   let bestD = tol;
@@ -812,7 +812,7 @@ function finishDrawing() {
     const prev = pts[pts.length - 2];
     if (dist2(last, prev) <= 1 / view.zoom) pts.pop();
   }
-  if ((d.type === 'rectangle' || d.type === 'line') && pts.length === 1 && d.cursor) {
+  if ((d.type === 'rectangle' || d.type === 'line' || d.type === 'circle') && pts.length === 1 && d.cursor) {
     pts.push(d.cursor);
   }
 
@@ -839,7 +839,7 @@ function finishDrawing() {
     redraw();
     return;
   }
-  if (storedType === 'rectangle' || storedType === 'line') {
+  if (storedType === 'rectangle' || storedType === 'line' || storedType === 'circle') {
     if (dist2(pts[0], pts[pts.length - 1]) < 2 / view.zoom) {
       state.drawing = null;
       redraw();
@@ -880,7 +880,6 @@ function finishDrawing() {
 function cancelDrawing() {
   if (!state.drawing) return false;
   state.drawing = null;
-  touchState.lastTap = 0;
   redraw();
   return true;
 }
@@ -1266,11 +1265,12 @@ function isDrawingTool() {
 }
 
 /* ---------------------------------------------------------- touch gestures
- * 触屏与鼠标共用画布，但交互分开处理：
+ * 触屏与鼠标共用画布，但交互分开处理（按 Apple HIG 的触控原则）：
  *  - 单指：当前工具标注 / 选中形状拖动 / 空白处平移
  *  - 双指：以两指中点缩放并平移，不会在画布上补点
- *  - 多边形等点式工具：单击加点，双击或浮动“完成”按钮结束
+ *  - 多边形等点式工具：单击加点；点回起点或浮动“完成”按钮结束
  *  - 触屏的 pointerdown 不立即落点，避免双指手势误加一个点
+ *  - 不把长按、双击设为必需操作；始终提供可见的完成/撤销/取消按钮
  */
 const touchState = {
   pointers: new Map(),
@@ -1278,10 +1278,7 @@ const touchState = {
   pan: null,
   single: null,
   suppress: false,
-  suppressTap: false,
-  lastTap: 0,
-  lastTapX: 0,
-  lastTapY: 0,
+  lastTouchEnd: 0,
   hintShown: false,
 };
 
@@ -1384,8 +1381,8 @@ function beginTouchDraw(ev) {
   };
   touchState.single = single;
 
-  // 矩形/直线支持按住拖拽，先落起点做预览；若第二根手指加入会恢复成按下前的状态
-  if (state.tool === 'rectangle' || state.tool === 'line') {
+  // 矩形/直线/圆支持按住拖拽，先落起点做预览；若第二根手指加入会恢复成按下前的状态
+  if (state.tool === 'rectangle' || state.tool === 'line' || state.tool === 'circle') {
     const shapeCount = state.shapes.length;
     handleDrawClick(state.tool, { x: cx, y: cy }, ev);
     single.drawChanged = state.shapes.length === shapeCount;
@@ -1411,7 +1408,7 @@ function touchDown(ev) {
   state.hover = null;
   if (!touchState.hintShown) {
     touchState.hintShown = true;
-    toast('触屏：单指标注，双指缩放/平移，双击或“完成”结束多边形');
+    toast('触屏：单指标注，双指缩放/平移；工具栏可左右滑，点起点或“完成”结束多边形');
   }
   if (state.tool === 'select') beginTouchSelect(ev);
   else beginTouchDraw(ev);
@@ -1432,7 +1429,6 @@ function startTouchGesture() {
       y: (cy - rect.top - view.ty) / view.zoom,
     },
   };
-  touchState.lastTap = 0;
   setManualZoomMode();
 }
 
@@ -1496,7 +1492,7 @@ function touchMove(ev) {
     return;
   }
 
-  if (s.mode === 'draw' && (s.tool === 'rectangle' || s.tool === 'line') && state.drawing) {
+  if (s.mode === 'draw' && (s.tool === 'rectangle' || s.tool === 'line' || s.tool === 'circle') && state.drawing) {
     const raw = clientToImage(ev.clientX, ev.clientY);
     const [cx, cy] = clampPointToImage(raw.x, raw.y);
     state.drawing.cursor = [cx, cy];
@@ -1507,27 +1503,11 @@ function touchMove(ev) {
 function handleTouchTap(ev, s) {
   const raw = clientToImage(ev.clientX, ev.clientY);
   const [cx, cy] = clampPointToImage(raw.x, raw.y);
-  const pt = { x: cx, y: cy };
-  const now = Date.now();
-  const d = state.drawing;
-  const finishable = !!d && ((d.type === 'polygon' && d.points.length >= 3)
-    || (d.type === 'linestrip' && d.points.length >= 2));
-  const doubleTap = finishable && now - touchState.lastTap < 330
-    && Math.hypot(ev.clientX - touchState.lastTapX, ev.clientY - touchState.lastTapY) < 28;
-  touchState.lastTap = now;
-  touchState.lastTapX = ev.clientX;
-  touchState.lastTapY = ev.clientY;
-
-  if (doubleTap) {
-    dropDuplicateTail(d);
-    finishDrawing();
-    return;
-  }
-  handleDrawClick(s.tool, pt, ev);
+  handleDrawClick(s.tool, { x: cx, y: cy }, ev);
 }
 
 function finishTouchDraw(ev, s) {
-  if (s.tool === 'rectangle' || s.tool === 'line') {
+  if (s.tool === 'rectangle' || s.tool === 'line' || s.tool === 'circle') {
     const d = state.drawing;
     if (d && d.type === s.tool && d.points.length === 1 && d.cursor
       && dist2(d.points[0], d.cursor) >= 2 / view.zoom) {
@@ -1574,6 +1554,7 @@ function cancelTouchSingle() {
 
 function touchUp(ev) {
   touchState.pointers.delete(ev.pointerId);
+  touchState.lastTouchEnd = Date.now();
 
   if (touchState.gesture) {
     if (touchState.pointers.size < 2) touchState.gesture = null;
@@ -1588,11 +1569,6 @@ function touchUp(ev) {
   }
 
   const s = touchState.single;
-  if (touchState.suppressTap) {
-    touchState.suppressTap = false;
-    if (s) touchState.single = null;
-    return;
-  }
   if (!s || s.id !== ev.pointerId) return;
   touchState.single = null;
 
@@ -1615,11 +1591,11 @@ function touchUp(ev) {
 
 function touchCancel(ev) {
   touchState.pointers.delete(ev.pointerId);
+  touchState.lastTouchEnd = Date.now();
   if (touchState.pointers.size < 2) touchState.gesture = null;
   cancelTouchSingle();
   if (touchState.pointers.size === 0) {
     touchState.suppress = false;
-    touchState.suppressTap = false;
   }
 }
 
@@ -1796,6 +1772,8 @@ canvas.addEventListener('pointercancel', (ev) => {
 
 canvas.addEventListener('dblclick', (ev) => {
   ev.preventDefault();
+  // 触屏结束多边形只走“完成”按钮或点回起点；忽略双击合成出的 dblclick
+  if (touchUi && Date.now() - touchState.lastTouchEnd < 600) return;
   if (state.drawing && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
     const d = state.drawing;
     // 双击的两次 pointerdown 可能各补了一个点；末尾重复点只保留一个
@@ -1806,8 +1784,9 @@ canvas.addEventListener('dblclick', (ev) => {
 
 canvas.addEventListener('contextmenu', (ev) => {
   ev.preventDefault();
+  // HIG：长按用于上下文菜单，不作为结束多边形的隐藏手势
+  if (isTouchPointer(ev) || (touchUi && ev.pointerType !== 'mouse') || (touchUi && touchState.pointers.size)) return;
   if (state.drawing && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
-    if (touchState.pointers.size) touchState.suppressTap = true;
     finishDrawing();
   }
 });
@@ -1868,7 +1847,7 @@ function handleDrawClick(tool, pt, ev) {
   if (tool === 'polygon') {
     // 回到起点即闭合（桌面 labelme 的默认手势），不再重复添加起点
     if (d.points.length >= 3 && d.points[0]
-      && dist2(d.points[0], [pt.x, pt.y]) <= Math.pow((touchUi ? 18 : 8) / view.zoom, 2)) {
+      && dist2(d.points[0], [pt.x, pt.y]) <= Math.pow((touchUi ? 22 : 8) / view.zoom, 2)) {
       finishDrawing();
       return;
     }
@@ -3175,8 +3154,6 @@ function resetSessionState() {
   touchState.gesture = null;
   touchState.pointers.clear();
   touchState.suppress = false;
-  touchState.suppressTap = false;
-  touchState.lastTap = 0;
   state.dirty = false;
   toggleTouchActions();
 }
@@ -4044,7 +4021,6 @@ function setTool(id) {
   }
   if (state.tool !== id && state.drawing && state.drawing.type !== id) cancelDrawing();
   state.tool = id;
-  touchState.lastTap = 0;
   document.querySelectorAll('.tool-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.tool === id);
   });
