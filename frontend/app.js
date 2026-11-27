@@ -3110,6 +3110,73 @@ async function createProject(name) {
   await switchProject(res.project ? res.project.name : clean);
 }
 
+function normalizeProjectName(raw) {
+  let name = String(raw || '')
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  name = name.replace(/[^A-Za-z0-9_.\-\u4e00-\u9fff ]/g, '_').slice(0, 40).trim();
+  if (!name || name === '.' || name === '..' || name.includes('..')) name = '新建工程';
+  return name;
+}
+
+/** 从文件夹上传的 webkitRelativePath 顶层目录名生成工程名。 */
+function projectBaseFromFiles(files) {
+  const first = [...files].find((f) => f.webkitRelativePath && f.webkitRelativePath.includes('/'));
+  if (!first) return '';
+  return String(first.webkitRelativePath).split('/')[0] || '';
+}
+
+function uniqueProjectName(base) {
+  const names = new Set((state.projects || []).map((p) => p.name));
+  let name = base;
+  let n = 2;
+  while (names.has(name)) {
+    const suffix = `-${n++}`;
+    name = `${base.slice(0, Math.max(1, 40 - suffix.length)).trim()}${suffix}`;
+  }
+  return name;
+}
+
+/** 关闭工程后第一次上传时，用文件夹名自动建一个新工程；重名自动加 -2/-3。 */
+async function ensureProjectForUpload(files) {
+  if (state.project) return state.project;
+  const res = await req('GET', '/api/projects');
+  state.projects = res.projects || [];
+  const base = normalizeProjectName(projectBaseFromFiles(files) || '新建工程');
+  const name = uniqueProjectName(base);
+  await createProject(name);
+  toast(`已新建工程「${name}」`);
+  return name;
+}
+
+/** 关闭整个工程，回到“未打开工程”的空状态；不会删除服务器上的数据。 */
+async function closeProject() {
+  if (!state.project && !state.sessionId && !state.images.length) return;
+  try {
+    if (state.dirty && state.image) await saveNow(true);
+  } catch (e) {
+    toast(`关闭前保存失败：${e.message}`, true);
+  }
+  state.project = null;
+  state.sessionId = null;
+  state.images = [];
+  state.labels = [];
+  state.flagDefs = [];
+  localStorage.removeItem(STORE_PROJECT);
+  sessionStorage.removeItem(STORE_SESSION);
+  resetSessionState();
+  const sp = $('statusProject');
+  if (sp) sp.textContent = projectLabel();
+  showEmpty(true);
+  refreshDocks();
+  refreshImageList();
+  updateStatus();
+  redraw();
+  toast('已关闭工程，打开文件夹会按文件夹名新建工程');
+}
+
+
 /** 一键把工程压成 zip，zip 留在 data/<用户>/ 下，同时触发浏览器下载。 */
 async function packageProject(name, owner) {
   const targetName = String(name || state.project || '').trim();
@@ -3340,6 +3407,7 @@ async function uploadFiles(files) {
   state.uploading = true;
   const saved = [];
   try {
+    if (!state.project) await ensureProjectForUpload(files);
     await ensureSessionAlive('上传前的工程空间已失效');
     for (const batch of uploadBatches(picked)) {
       const form = new FormData();
@@ -3790,7 +3858,8 @@ const MENUS = [
       { id: 'changeOutputDir', label: '更改标注文件夹(&F)…' },
       { id: 'embedImage', label: '将图像嵌入标注文件', checkable: true, checked: () => state.embedImage },
       { sep: true },
-      { id: 'closeImage', label: '关闭(&C)', sc: 'Ctrl+W', disabled: () => !state.image },
+      { id: 'closeProject', label: '关闭工程(&C)', sc: 'Ctrl+W', disabled: () => !state.project && !state.sessionId },
+      { id: 'closeImage', label: '关闭当前图像', sc: 'Ctrl+Shift+W', disabled: () => !state.image },
       { id: 'deleteAnnotation', label: '删除标注文件(&D)', sc: 'Ctrl+Del', disabled: () => !currentImageAnnotated() },
       { sep: true },
       { id: 'settings', label: '设置…', sc: 'Ctrl+Shift+,' },
@@ -4215,6 +4284,9 @@ function runAction(id) {
       break;
     case 'saveAs':
       downloadAnnotation();
+      break;
+    case 'closeProject':
+      closeProject();
       break;
     case 'closeImage':
       closeCurrentImage();
@@ -4700,7 +4772,8 @@ document.addEventListener('keydown', (ev) => {
         return;
       case 'w':
         ev.preventDefault();
-        closeCurrentImage();
+        if (ev.shiftKey) closeCurrentImage();
+        else closeProject();
         return;
       case 'z':
         ev.preventDefault();
