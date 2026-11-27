@@ -127,6 +127,10 @@ def _prune_states() -> None:
     now = time.time()
     for key in [k for k, v in _STATES.items() if now - v["at"] > STATE_TTL]:
         _STATES.pop(key, None)
+    if len(_STATES) >= 4096:
+        # 登录入口是公开的；限制未完成 state 的数量，避免被刷爆内存。
+        for key in sorted(_STATES, key=lambda k: _STATES[k]["at"])[: len(_STATES) - 2048]:
+            _STATES.pop(key, None)
 
 
 def begin(origin: str, next_path: str) -> str:
@@ -202,7 +206,7 @@ def _verify_id_token(id_token: str, nonce: str) -> Dict[str, Any]:
         raise
     except Exception as exc:
         raise SsoError(f"id_token 校验失败：{exc}")
-    if nonce and claims.get("nonce") and claims["nonce"] != nonce:
+    if nonce and claims.get("nonce") != nonce:
         raise SsoError("nonce 不匹配（疑似重放）")
     return claims
 

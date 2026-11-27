@@ -4,8 +4,9 @@
 又要能让管理员在 /admin 页面里直接改（学校场景没人愿意为了改一个 base DN 去登服务器）。
 所以读的时候 **数据库优先、环境变量兜底**，写的时候一律写数据库。
 
-密钥（bind 密码、client secret）也存在这个表里，明文。前提是这台机器的
-`var/labelme-web.db` 本身受操作系统权限保护 —— 这点和现有的 bcrypt 账号库是同一个信任边界。
+密钥（bind 密码、client secret、AI API key）以 Fernet 密文存库，密钥来自
+`LABELME_WEB_SECRET_KEY` 或 `var/.secret.key`（0600）。数据库和密钥文件要分开保护；
+备份时必须两个一起拷，只拿数据库无法还原明文。
 """
 
 from __future__ import annotations

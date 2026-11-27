@@ -56,6 +56,7 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-\u4e00-\u9fff]{2,32}$")
 LOGIN_FAIL_WINDOW = 300          # 5 分钟内
 LOGIN_FAIL_LIMIT = 6             # 失败 6 次锁 60 秒
 LOGIN_LOCK_SECONDS = 60
+_FAIL_KEYS_MAX = 4096            # 防止攻击者用随机账号名把内存撑大
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -430,6 +431,15 @@ def check_throttle(request: Request, username: str) -> None:
 def note_failure(request: Request, username: str) -> None:
     key = _fail_key(request, username)
     with _LOCK:
+        if len(_FAILS) >= _FAIL_KEYS_MAX:
+            cutoff = time.time() - LOGIN_FAIL_WINDOW
+            stale = [k for k, stamps in _FAILS.items() if not stamps or stamps[-1] < cutoff]
+            for stale_key in stale:
+                _FAILS.pop(stale_key, None)
+            if len(_FAILS) >= _FAIL_KEYS_MAX:
+                # 仍然超限时丢掉最早的一半，宁可临时放宽限流也不让进程被撑爆。
+                for old_key in list(_FAILS)[: max(1, len(_FAILS) // 2)]:
+                    _FAILS.pop(old_key, None)
         _FAILS.setdefault(key, []).append(time.time())
 
 
@@ -546,9 +556,24 @@ def _origin(request: Request) -> str:
 
 
 def _safe_next(value: Optional[str]) -> str:
-    if not value or not value.startswith("/") or value.startswith("//"):
+    """只接受本站绝对路径，挡住 //、反斜杠和编码后的协议相对跳转。"""
+    if not value:
         return "/"
-    return value
+    text = str(value)
+    if any(ord(ch) < 32 for ch in text):
+        return "/"
+    lowered = text.lower()
+    if "\\" in text or "%2f" in lowered or "%5c" in lowered:
+        return "/"
+    if not text.startswith("/") or text.startswith("//"):
+        return "/"
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return "/"
+    if parts.scheme or parts.netloc:
+        return "/"
+    return text
 
 
 @router.get("/sso/start")

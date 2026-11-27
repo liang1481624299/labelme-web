@@ -21,6 +21,7 @@ import json
 import html as html_lib
 import os
 import re
+import secrets
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -347,13 +348,36 @@ async def upload_images(session: str, request: Request, files: List[UploadFile] 
         name = safe_name(upload.filename or "")
         if Path(name).suffix.lower() not in IMAGE_SUFFIXES:
             raise HTTPException(status_code=400, detail="unsupported image: %s" % name)
-        data = await upload.read()
-        if len(data) > limit:
-            raise HTTPException(status_code=413, detail="image too large: %s" % name)
-        target = unique_target(folder, name)
-        target.write_bytes(data)
+        tmp = folder / (".upload-" + secrets.token_hex(12))
+        total = 0
+        try:
+            with open(tmp, "wb") as handle:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > limit:
+                        raise HTTPException(status_code=413, detail="image too large: %s" % name)
+                    handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+            target = unique_target(folder, name)
+            os.replace(tmp, target)
+        except HTTPException:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+        except Exception:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
         saved.append(target.name)
-        activity.record(actor, "upload", owner, project, session, target.name, len(data))
+        activity.record(actor, "upload", owner, project, session, target.name, total)
     info = _session_info(session, folder)
     return {"session": session, "saved": saved, **info}
 
@@ -376,6 +400,8 @@ def list_images(session: str, request: Request) -> Dict[str, Any]:
 def get_image(session: str, name: str, request: Request) -> FileResponse:
     folder = _folder(session, request)
     name = safe_name(name)
+    if Path(name).suffix.lower() not in IMAGE_SUFFIXES:
+        raise HTTPException(status_code=400, detail="unsupported image")
     path = folder / name
     if not path.is_file():
         raise HTTPException(status_code=404, detail="image not found")
@@ -387,7 +413,12 @@ def delete_image(session: str, name: str, request: Request) -> Dict[str, str]:
     """labelme's "Delete File": removes the image, its annotation and its draft."""
     folder = _folder(session, request)
     name = safe_name(name)
-    for path in (folder / name, folder / (name + ".json"), draft_path(folder, name)):
+    if Path(name).suffix.lower() not in IMAGE_SUFFIXES:
+        raise HTTPException(status_code=400, detail="unsupported image")
+    image = folder / name
+    if not image.is_file():
+        raise HTTPException(status_code=404, detail="image not found")
+    for path in (image, folder / (name + ".json"), draft_path(folder, name)):
         if path.is_file():
             path.unlink()
     owner, project = _place(session)
@@ -1147,11 +1178,20 @@ def page_index(request: Request) -> Response:
 @app.get("/login", include_in_schema=False)
 def page_login(request: Request) -> Response:
     if auth.user_from_request(request) is not None:
-        nxt = request.query_params.get("next") or "/"
-        if not nxt.startswith("/") or nxt.startswith("//"):
-            nxt = "/"
+        nxt = auth._safe_next(request.query_params.get("next") or "/")
         return RedirectResponse(nxt, status_code=302)
     return FileResponse(str(FRONTEND_DIR / "login.html"), media_type="text/html")
+
+
+@app.get("/index.html", include_in_schema=False)
+def page_index_html(request: Request) -> Response:
+    """静态挂载会绕过页面鉴权，这两个入口必须显式走登录/管理员检查。"""
+    return page_index(request)
+
+
+@app.get("/admin.html", include_in_schema=False)
+def page_admin_html(request: Request) -> Response:
+    return page_admin(request)
 
 
 @app.get("/admin", include_in_schema=False)
