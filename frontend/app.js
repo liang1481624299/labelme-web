@@ -3779,7 +3779,7 @@ const MENUS = [
     ],
   },
   {
-    name: '在线',
+    name: '在线(&O)',
     items: [
       { id: 'projects', label: '切换工程…' },
       { id: 'newProject', label: '新建工程…' },
@@ -3816,6 +3816,7 @@ function buildMenuItems(list, items) {
     }
     const row = document.createElement('div');
     row.className = 'menu-item' + (item.children ? ' has-sub' : '');
+    row.tabIndex = -1;
     row._checkFn = item.checkable ? item.checked : null;
     row._disabledFn = typeof item.disabled === 'function' ? item.disabled : (() => !!item.disabled);
 
@@ -3869,28 +3870,73 @@ function refreshMenuState(list) {
   });
 }
 
+function menuAccessKey(name) {
+  const match = String(name || '').match(/&([A-Za-z])/);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function toggleMenu(btn, list, focusFirst) {
+  const open = list.classList.contains('show');
+  hideMenus();
+  if (open) return;
+  refreshMenuState(list);
+  const rect = btn.getBoundingClientRect();
+  list.style.left = `${rect.left}px`;
+  list.classList.add('show');
+  btn.classList.add('open');
+  if (focusFirst) {
+    const row = Array.from(list.children).find((el) => (
+      el.classList && el.classList.contains('menu-item') && !el.classList.contains('disabled')
+    ));
+    if (row) row.focus();
+  }
+}
+
+function focusMenuRow(list, step) {
+  const rows = Array.from(list.children).filter((el) => (
+    el.classList && el.classList.contains('menu-item') && !el.classList.contains('disabled')
+  ));
+  if (!rows.length) return;
+  const current = rows.indexOf(document.activeElement);
+  const index = current < 0 ? 0 : (current + step + rows.length) % rows.length;
+  rows[index].focus();
+}
+
 function buildMenubar() {
   const bar = $('menubar');
   MENUS.forEach((menu) => {
     const btn = document.createElement('button');
     btn.className = 'menu-btn';
     btn.textContent = menuLabel(menu.name);
+    const accessKey = menuAccessKey(menu.name);
+    if (accessKey) {
+      btn.dataset.menuKey = accessKey;
+      btn.setAttribute('aria-keyshortcuts', `Alt+${accessKey.toUpperCase()}`);
+      btn.title = `Alt+${accessKey.toUpperCase()} 打开${menuLabel(menu.name).replace(/\([A-Za-z]\)$/, '')}菜单`;
+    }
 
     const list = document.createElement('div');
     list.className = 'menu-list';
     buildMenuItems(list, menu.items);
+    btn._menuList = list;
+    list.addEventListener('keydown', (ev) => {
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        focusMenuRow(list, ev.key === 'ArrowDown' ? 1 : -1);
+      } else if (ev.key === 'Enter' || ev.key === ' ') {
+        const row = document.activeElement;
+        if (row && row.classList && row.classList.contains('menu-item')) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          row.click();
+        }
+      }
+    });
 
     btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      const open = list.classList.contains('show');
-      hideMenus();
-      if (!open) {
-        refreshMenuState(list);
-        const rect = btn.getBoundingClientRect();
-        list.style.left = `${rect.left}px`;
-        list.classList.add('show');
-        btn.classList.add('open');
-      }
+      toggleMenu(btn, list, false);
     });
 
     bar.appendChild(btn);
@@ -4501,6 +4547,16 @@ document.addEventListener('keydown', (ev) => {
   const ctrl = ev.ctrlKey || ev.metaKey;
   const key = ev.key;
 
+  if (ev.altKey && !ctrl && !ev.shiftKey && key.length === 1) {
+    const menuBtn = document.querySelector(`.menu-btn[data-menu-key="${key.toLowerCase()}"]`);
+    if (menuBtn && menuBtn._menuList) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      toggleMenu(menuBtn, menuBtn._menuList, true);
+      return;
+    }
+  }
+
   if (ctrl) {
     switch (key.toLowerCase()) {
       case ',':
@@ -4627,7 +4683,13 @@ document.addEventListener('keydown', (ev) => {
 
   switch (key) {
     case 'Escape':
-      if (!$('labelModal').hidden) closeLabelDialog(null);
+      if (document.querySelector('.menu-list.show')) {
+        const menuBtn = document.querySelector('.menu-btn.open');
+        hideMenus();
+        if (menuBtn) menuBtn.focus();
+        ev.preventDefault();
+      }
+      else if (!$('labelModal').hidden) closeLabelDialog(null);
       else if (state.drawing) cancelDrawing();
       else if (state.selected >= 0) {
         state.selected = -1;
