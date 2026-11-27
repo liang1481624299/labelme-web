@@ -31,7 +31,7 @@ import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 
-from backend import ldap_auth, settings_store, sso_auth
+from backend import ldap_auth, settings_store, sqlite_util, sso_auth
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("LABELME_WEB_DB") or (BASE_DIR / "var" / "labelme-web.db"))
@@ -72,7 +72,7 @@ def db_path() -> Path:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path()), timeout=10)
+    conn = sqlite_util.connect(db_path(), timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 

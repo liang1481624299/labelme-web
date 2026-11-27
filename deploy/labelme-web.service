@@ -20,6 +20,9 @@ Restart=always
 RestartSec=3
 TimeoutStopSec=20
 
+# 上传目录时浏览器会同时提交多张图；留足临时文件句柄，避免 300+ 张时撞到 1024
+LimitNOFILE=65536
+
 # data/ 存标注、var/ 存账号库，是唯一需要写入的两处
 ReadWritePaths=/opt/labelme-web/data /opt/labelme-web/var
 

@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from backend import sqlite_util
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("LABELME_WEB_DATA") or (BASE_DIR / "data")).resolve()
 LEGACY_LABELS = DATA_DIR / "labels.txt"
@@ -76,7 +78,7 @@ def _conn() -> sqlite3.Connection:
     if _DB is None:
         raise RuntimeError("workspace.init() 未调用")
     _DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_DB), timeout=10)
+    conn = sqlite_util.connect(_DB, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 

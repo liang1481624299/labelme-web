@@ -417,6 +417,9 @@ async def upload_images(session: str, request: Request, files: List[UploadFile] 
             except OSError:
                 pass
             raise
+        finally:
+            # 批量上传时尽早释放 SpooledTemporaryFile，别把几百个临时句柄攒到请求结束
+            await upload.close()
         saved.append(target.name)
         activity.record(actor, "upload", owner, project, session, target.name, total)
     info = _session_info(session, folder)

@@ -518,6 +518,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 上传体积上限有三处：NGINX 的 `client_max_body_size`、后台「系统设置 → 单文件上传上限」（存数据库，优先），
 以及 `labelme-web.service` 里的 `LABELME_WEB_MAX_UPLOAD_MB`（默认 200 MB，作为环境变量兜底）。
+前端一次选几百张图时会按**每批最多 20 张或 64 MB** 分批发送，避免一个请求里同时打开几百个上传临时文件。
 
 HTTPS：把证书 `ssl_certificate` / `ssl_certificate_key` 加进该 server 块即可，后端不需要改；
 登录 cookie 会自动按 `X-Forwarded-Proto: https` 加上 `Secure`（也可用

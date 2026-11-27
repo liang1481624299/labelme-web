@@ -146,12 +146,13 @@ function startSessionHeartbeat() {
 }
 
 let toastTimer = null;
-function toast(msg, isError) {  const el = $('toast');
+function toast(msg, isError, sticky) {
+  const el = $('toast');
   el.textContent = msg;
   el.classList.toggle('error', !!isError);
   el.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, isError ? 4200 : 2000);
+  toastTimer = sticky ? null : setTimeout(() => { el.hidden = true; }, isError ? 4200 : 2000);
 }
 
 /* ------------------------------------------------------------------- state */
@@ -161,6 +162,7 @@ const state = {
   project: null,        // 当前工程名
   projects: [],         // 当前账号可见的工程
   user: null,
+  uploading: false,
   images: [],           // [{name,size,annotated}]
   index: -1,
   image: null,          // {name,w,h,img,canvas}
@@ -3301,35 +3303,76 @@ async function listSessions() {
   return (res && Array.isArray(res.sessions)) ? res.sessions : [];
 }
 
+// 一次请求别塞几百张图：multipart 在服务端会把所有 UploadFile 同时打开，
+// 既浪费临时文件句柄，也容易顶到 nginx/后端的单次请求上限。
+const UPLOAD_BATCH_FILES = 20;
+const UPLOAD_BATCH_BYTES = 64 * 1024 * 1024;
+
+function uploadBatches(files) {
+  const batches = [];
+  let batch = [];
+  let bytes = 0;
+  files.forEach((file) => {
+    const size = Number(file.size) || 0;
+    if (batch.length && (batch.length >= UPLOAD_BATCH_FILES || bytes + size > UPLOAD_BATCH_BYTES)) {
+      batches.push(batch);
+      batch = [];
+      bytes = 0;
+    }
+    batch.push(file);
+    bytes += size;
+  });
+  if (batch.length) batches.push(batch);
+  return batches;
+}
+
 async function uploadFiles(files) {
   const picked = [...files].filter((f) => IMAGE_RE.test(f.name));
   if (!picked.length) {
     toast('没有可用的图像文件（jpg/png/bmp/webp…）', true);
     return;
   }
-  const form = new FormData();
-  picked.forEach((f) => form.append('files', f, f.name));
-  const doUpload = () => req('POST', `/api/sessions/${state.sessionId}/images`, form, true);
+  if (state.uploading) {
+    toast('已有上传任务在进行，请等它完成', true);
+    return;
+  }
 
+  state.uploading = true;
+  const saved = [];
   try {
     await ensureSessionAlive('上传前的工程空间已失效');
-    let res;
-    try {
-      res = await doUpload();
-    } catch (e) {
-      if (e.status === 404 && /session|工程/i.test(e.message)) {
-        await newSession('上传时工程目录已消失');
+    for (const batch of uploadBatches(picked)) {
+      const form = new FormData();
+      batch.forEach((f) => form.append('files', f, f.name));
+      const doUpload = () => req('POST', `/api/sessions/${state.sessionId}/images`, form, true);
+      toast(`正在上传 ${saved.length + 1}–${saved.length + batch.length} / ${picked.length}`, false, true);
+
+      let res;
+      try {
         res = await doUpload();
-      } else {
-        throw e;
+      } catch (e) {
+        if (e.status === 404 && /session|工程/i.test(e.message)) {
+          await newSession('上传时工程目录已消失');
+          res = await doUpload();
+        } else {
+          throw e;
+        }
       }
+      saved.push(...(res.saved || []));
     }
-    toast(`已上传 ${res.saved.length} 张图像`);
+
+    toast(`已上传 ${saved.length} 张图像`);
     await reloadImages();
-    const last = res.saved[res.saved.length - 1];
-    if (last) await openImage(last);
+    if (saved.length) await openImage(saved[saved.length - 1]);
   } catch (e) {
-    toast(`上传失败：${e.message}`, true);
+    if (saved.length) {
+      await reloadImages();
+      toast(`上传中断：已成功 ${saved.length} 张，${e.message}`, true);
+    } else {
+      toast(`上传失败：${e.message}`, true);
+    }
+  } finally {
+    state.uploading = false;
   }
 }
 
