@@ -145,6 +145,8 @@ const state = {
   keepPrev: false,
   keepZoom: false,
   keepBc: false,
+  fitWindow: true,
+  fitSelection: false,
   brightness: 0,
   contrast: 0,
   zoom: 1,
@@ -222,6 +224,8 @@ function clampPointToImage(x, y) {
 
 function fitToWindow() {
   if (!state.image) return;
+  state.fitWindow = true;
+  state.fitSelection = false;
   const w = wrap.clientWidth;
   const h = wrap.clientHeight;
   const pad = 12;
@@ -233,8 +237,14 @@ function fitToWindow() {
   redraw();
 }
 
+function setManualZoomMode() {
+  state.fitWindow = false;
+  state.fitSelection = false;
+}
+
 function zoomAt(factor) {
   if (!state.image) return;
+  setManualZoomMode();
   // 以图像中心为锚点：滚轮/按钮放大缩小时画面不跟着鼠标漂移
   const anchorX = view.tx + state.image.w * view.zoom / 2;
   const anchorY = view.ty + state.image.h * view.zoom / 2;
@@ -248,6 +258,7 @@ function zoomAt(factor) {
 
 function zoomTo(z) {
   if (!state.image) return;
+  setManualZoomMode();
   const w = wrap.clientWidth;
   const h = wrap.clientHeight;
   const center = { x: (w / 2 - view.tx) / view.zoom, y: (h / 2 - view.ty) / view.zoom };
@@ -1212,6 +1223,7 @@ canvas.addEventListener('pointerdown', (ev) => {
   try { canvas.setPointerCapture(ev.pointerId); } catch (e) { /* 合成事件无捕获 */ }
 
   if (ev.button === 1 || (ev.button === 0 && ev.altKey)) {
+    setManualZoomMode();
     state.panning = { x: ev.clientX, y: ev.clientY, tx: view.tx, ty: view.ty };
     return;
   }
@@ -1640,6 +1652,8 @@ function fitToSelection() {
     toast('先选中一个形状');
     return;
   }
+  state.fitWindow = false;
+  state.fitSelection = true;
   const shape = state.shapes[state.selected];
   if (!shape.points.length) return;
   const [x0, y0, x1, y1] = pointBounds(shape.points);
@@ -1699,6 +1713,11 @@ function convertSelectedShape(target) {
   const shape = state.shapes[state.selected];
   if (shape.locked) {
     toast('该形状已锁定，按 Ctrl+Shift+L 解锁');
+    return;
+  }
+  const blocker = convertBlocker(target);
+  if (blocker && blocker !== 'already_target') {
+    toastConvertBlocker(blocker, target);
     return;
   }
   const from = shape.shape_type;
@@ -1946,17 +1965,25 @@ function paintShapeOntoCtx(shape, g, dx = 0, dy = 0) {
 
 /** 合并多个形状 → 单个 mask 形状（与桌面版「合并形状」语义一致）。 */
 function mergeSelectedShapes() {
-  const idx = state.selectedSet.length >= 2 ? state.selectedSet.slice() : [];
-  if (idx.length < 2) {
+  const blocker = mergeBlocker();
+  if (blocker === 'too_few') {
     toast('多选用 Shift + 逐个点选，至少两个形状');
     return;
   }
-  const shapes = idx.map((i) => state.shapes[i]).filter(Boolean);
-  const locked = shapes.find((s) => s.locked);
-  if (locked) {
+  if (blocker === 'not_masks') {
+    toast('只有掩码形状可以合并');
+    return;
+  }
+  if (blocker === 'locked') {
     toast('选中的形状里有锁定的，先解锁再合并');
     return;
   }
+  if (blocker === 'mixed_labels') {
+    toast('只能合并标签相同的掩码形状');
+    return;
+  }
+  const idx = selectedShapeIndices();
+  const shapes = idx.map((i) => state.shapes[i]).filter(Boolean);
   const boxes = shapes.map((s) => boundingBoxOf(s));
   const x0 = Math.max(0, Math.floor(Math.min(...boxes.map((b) => b[0][0]))));
   const y0 = Math.max(0, Math.floor(Math.min(...boxes.map((b) => b[0][1]))));
@@ -2248,12 +2275,28 @@ function closeLabelDialog(value) {
   if (cb) cb(value, value === null ? null : currentLabelMeta());
 }
 
+let lastFitSelectionKey = '';
+
 async function refreshDocks() {
   refreshFlagList();
   refreshLabelList();
   refreshShapeList();
   refreshImageList();
   updateStatus();
+  applyFitSelectionIfNeeded();
+}
+
+function applyFitSelectionIfNeeded() {
+  if (!state.fitSelection || state.selected < 0) {
+    lastFitSelectionKey = '';
+    return;
+  }
+  const key = `${state.selected}:${state.selectedSet.join(',')}`;
+  if (key === lastFitSelectionKey) return;
+  lastFitSelectionKey = key;
+  requestAnimationFrame(() => {
+    if (state.fitSelection && state.selected >= 0) fitToSelection();
+  });
 }
 
 function refreshFlagList() {
@@ -3131,8 +3174,92 @@ function selectedShapeType() {
   return state.shapes[state.selected].shape_type;
 }
 
+function selectedShapeIndices() {
+  const set = (state.selectedSet || []).filter((i) => Number.isInteger(i) && state.shapes[i]);
+  if (set.length) return set;
+  return state.selected >= 0 && state.shapes[state.selected] ? [state.selected] : [];
+}
+
+function selectedShapeRecords() {
+  return selectedShapeIndices().map((i) => state.shapes[i]).filter(Boolean);
+}
+
+const CONVERT_SOURCES = {
+  polygon: ['rectangle', 'oriented_rectangle', 'circle', 'linestrip', 'mask'],
+  rectangle: ['polygon', 'oriented_rectangle', 'circle', 'linestrip', 'mask'],
+  line: ['linestrip'],
+  linestrip: ['polygon', 'line'],
+  mask: ['polygon'],
+};
+
+function convertBlocker(target) {
+  const shapes = selectedShapeRecords();
+  if (!shapes.length) return 'no_selection';
+  const sources = shapes.filter((s) => s.shape_type !== target);
+  if (!sources.length) return 'already_target';
+  const allowed = CONVERT_SOURCES[target] || [];
+  if (sources.some((s) => !allowed.includes(s.shape_type))) return 'wrong_type';
+  if (target === 'polygon' && sources.some((s) => {
+    if (s.shape_type !== 'linestrip') return false;
+    const uniq = new Set(s.points.map((p) => `${p[0]},${p[1]}`));
+    return uniq.size < 3;
+  })) return 'too_few_points';
+  if (target === 'line' && sources.some((s) => s.shape_type === 'linestrip' && s.points.length !== 2)) {
+    return 'too_many_points';
+  }
+  if (target === 'rectangle' && sources.some((s) => {
+    const [[x0, y0], [x1, y1]] = boundingBoxOf(s);
+    return x1 <= x0 || y1 <= y0;
+  })) return 'no_area';
+  if (sources.some((s) => s.locked)) return 'locked';
+  return null;
+}
+
+function mergeBlocker() {
+  const shapes = selectedShapeRecords();
+  if (shapes.length < 2) return 'too_few';
+  if (shapes.some((s) => s.shape_type !== 'mask')) return 'not_masks';
+  if (shapes.some((s) => s.locked)) return 'locked';
+  if (new Set(shapes.map((s) => s.label)).size > 1) return 'mixed_labels';
+  return null;
+}
+
+const CONVERT_TARGET_LABELS = {
+  polygon: '多边形',
+  rectangle: '矩形',
+  oriented_rectangle: '有向矩形',
+  circle: '圆形',
+  line: '直线',
+  point: '点',
+  linestrip: '折线',
+  mask: '掩码',
+};
+
+function toastConvertBlocker(blocker, target) {
+  const name = CONVERT_TARGET_LABELS[target] || target;
+  if (blocker === 'no_selection') toast('先选中形状');
+  else if (blocker === 'already_target') toast(`形状已经是${name}`);
+  else if (blocker === 'wrong_type') toast(`当前离线版不支持转换为${name}`);
+  else if (blocker === 'too_few_points') toast('折线至少需要 3 个点才能转成多边形');
+  else if (blocker === 'too_many_points') toast('只有两个端点的折线可以转成直线');
+  else if (blocker === 'no_area') toast('形状没有有效面积，无法转换');
+  else if (blocker === 'locked') toast('该形状已锁定，按 Ctrl+Shift+L 解锁');
+}
+
 function isAdminUser() {
   return !!(state.user && state.user.role === 'admin');
+}
+
+function currentImageAnnotated() {
+  return state.index >= 0 && !!(state.images[state.index] && state.images[state.index].annotated);
+}
+
+function hasSelection() {
+  return selectedShapeIndices().length > 0;
+}
+
+function hasUnlockedSelection() {
+  return selectedShapeRecords().some((s) => !s.locked);
 }
 
 const MENUS = [
@@ -3142,17 +3269,17 @@ const MENUS = [
       { id: 'openFile', label: '打开文件(&O)…', sc: 'Ctrl+O' },
       { id: 'upload', label: '打开文件夹…', sc: 'Ctrl+U' },
       { sep: true },
-      { id: 'prev', label: '上一张图像(&P)', sc: 'A' },
-      { id: 'next', label: '下一张图像(&N)', sc: 'D' },
+      { id: 'prev', label: '上一张图像(&P)', sc: 'A', disabled: () => state.index <= 0 },
+      { id: 'next', label: '下一张图像(&N)', sc: 'D', disabled: () => state.index < 0 || state.index >= state.images.length - 1 },
       { sep: true },
-      { id: 'save', label: '保存(&S)', sc: 'Ctrl+S' },
-      { id: 'saveAs', label: '另存为(&A)…', sc: 'Ctrl+Shift+S' },
+      { id: 'save', label: '保存(&S)', sc: 'Ctrl+S', disabled: () => !state.image },
+      { id: 'saveAs', label: '另存为(&A)…', sc: 'Ctrl+Shift+S', disabled: () => !state.image },
       { id: 'autoSave', label: '自动保存(&T)', checkable: true, checked: () => state.autoSave },
       { id: 'changeOutputDir', label: '更改标注文件夹(&F)…' },
       { id: 'embedImage', label: '将图像嵌入标注文件', checkable: true, checked: () => state.embedImage },
       { sep: true },
-      { id: 'closeImage', label: '关闭(&C)', sc: 'Ctrl+W' },
-      { id: 'deleteAnnotation', label: '删除标注文件(&D)', sc: 'Ctrl+Del' },
+      { id: 'closeImage', label: '关闭(&C)', sc: 'Ctrl+W', disabled: () => !state.image },
+      { id: 'deleteAnnotation', label: '删除标注文件(&D)', sc: 'Ctrl+Del', disabled: () => !currentImageAnnotated() },
       { sep: true },
       { id: 'settings', label: '设置…', sc: 'Ctrl+Shift+,' },
       { id: 'aiModels', label: 'AI 模型…' },
@@ -3175,37 +3302,37 @@ const MENUS = [
       { id: 'toolAiFindAll', label: 'AI-Find All', disabled: true },
       { id: 'editShape', label: '编辑形状', sc: 'Ctrl+J', checkable: true, checked: () => state.editShape },
       { sep: true },
-      { id: 'undo', label: '撤销', sc: 'Ctrl+Z' },
-      { id: 'undoLastPoint', label: '撤销上一个点', sc: 'Ctrl+Z' },
+      { id: 'undo', label: '撤销', sc: 'Ctrl+Z', disabled: () => state.undo.length === 0 },
+      { id: 'undoLastPoint', label: '撤销上一个点', sc: 'Ctrl+Z', disabled: () => !state.drawing },
       { sep: true },
-      { id: 'copyShape', label: '复制到剪贴板', sc: 'Ctrl+C' },
-      { id: 'pasteShape', label: '从剪贴板粘贴', sc: 'Ctrl+V' },
-      { id: 'duplicateShape', label: '复制形状', sc: 'Ctrl+D' },
+      { id: 'copyShape', label: '复制到剪贴板', sc: 'Ctrl+C', disabled: () => !hasSelection() },
+      { id: 'pasteShape', label: '从剪贴板粘贴', sc: 'Ctrl+V', disabled: () => !state.clipboard },
+      { id: 'duplicateShape', label: '复制形状', sc: 'Ctrl+D', disabled: () => !hasSelection() },
       { sep: true },
-      { id: 'editShapeLabel', label: '编辑标签(&E)…', sc: 'Ctrl+E' },
-      { id: 'deleteShape', label: '删除形状', sc: 'Del' },
-      { id: 'mergeShapes', label: '合并形状' },
+      { id: 'editShapeLabel', label: '编辑标签(&E)…', sc: 'Ctrl+E', disabled: () => !hasUnlockedSelection() },
+      { id: 'deleteShape', label: '删除形状', sc: 'Del', disabled: () => !selectedShapeRecords().some((s) => !s.locked) },
+      { id: 'mergeShapes', label: '合并形状', disabled: () => mergeBlocker() !== null },
       {
         id: 'convert',
         label: '转换为',
         children: [
-          { id: 'convertPolygon', label: '多边形', checkable: true, checked: () => selectedShapeType() === 'polygon', disabled: () => state.selected < 0 },
-          { id: 'convertRectangle', label: '矩形', checkable: true, checked: () => selectedShapeType() === 'rectangle', disabled: () => state.selected < 0 },
-          { id: 'convertOrientedRectangle', label: '有向矩形', checkable: true, checked: () => selectedShapeType() === 'oriented_rectangle', disabled: () => state.selected < 0 },
-          { id: 'convertCircle', label: '圆形', checkable: true, checked: () => selectedShapeType() === 'circle', disabled: () => state.selected < 0 },
-          { id: 'convertLine', label: '直线', checkable: true, checked: () => selectedShapeType() === 'line', disabled: () => state.selected < 0 },
-          { id: 'convertPoint', label: '点', checkable: true, checked: () => selectedShapeType() === 'point', disabled: () => state.selected < 0 },
-          { id: 'convertLinestrip', label: '折线', checkable: true, checked: () => selectedShapeType() === 'linestrip', disabled: () => state.selected < 0 },
-          { id: 'convertMask', label: '掩码', checkable: true, checked: () => selectedShapeType() === 'mask', disabled: () => state.selected < 0 },
+          { id: 'convertPolygon', label: '多边形', checkable: true, checked: () => convertBlocker('polygon') === 'already_target', disabled: () => convertBlocker('polygon') !== null },
+          { id: 'convertRectangle', label: '矩形', checkable: true, checked: () => convertBlocker('rectangle') === 'already_target', disabled: () => convertBlocker('rectangle') !== null },
+          { id: 'convertOrientedRectangle', label: '有向矩形', checkable: true, checked: () => convertBlocker('oriented_rectangle') === 'already_target', disabled: () => convertBlocker('oriented_rectangle') !== null },
+          { id: 'convertCircle', label: '圆形', checkable: true, checked: () => convertBlocker('circle') === 'already_target', disabled: () => convertBlocker('circle') !== null },
+          { id: 'convertLine', label: '直线', checkable: true, checked: () => convertBlocker('line') === 'already_target', disabled: () => convertBlocker('line') !== null },
+          { id: 'convertPoint', label: '点', checkable: true, checked: () => convertBlocker('point') === 'already_target', disabled: () => convertBlocker('point') !== null },
+          { id: 'convertLinestrip', label: '折线', checkable: true, checked: () => convertBlocker('linestrip') === 'already_target', disabled: () => convertBlocker('linestrip') !== null },
+          { id: 'convertMask', label: '掩码', checkable: true, checked: () => convertBlocker('mask') === 'already_target', disabled: () => convertBlocker('mask') !== null },
         ],
       },
-      { id: 'lockShape', label: '锁定形状', sc: 'Ctrl+Shift+L' },
-      { id: 'deletePoint', label: '删除选中的点', sc: 'Meta+H' },
+      { id: 'lockShape', label: '锁定形状', sc: 'Ctrl+Shift+L', disabled: () => !hasSelection() },
+      { id: 'deletePoint', label: '删除选中的点', sc: 'Meta+H', disabled: () => state.selectedVertex < 0 },
       { sep: true },
-      { id: 'selectUp', label: '选择上方形状', sc: 'Ctrl+Up' },
-      { id: 'selectDown', label: '选择下方形状', sc: 'Ctrl+Down' },
-      { id: 'selectLeft', label: '选择左侧形状', sc: 'Ctrl+Left' },
-      { id: 'selectRight', label: '选择右侧形状', sc: 'Ctrl+Right' },
+      { id: 'selectUp', label: '选择上方形状', sc: 'Ctrl+Up', disabled: () => state.shapes.length === 0 },
+      { id: 'selectDown', label: '选择下方形状', sc: 'Ctrl+Down', disabled: () => state.shapes.length === 0 },
+      { id: 'selectLeft', label: '选择左侧形状', sc: 'Ctrl+Left', disabled: () => state.shapes.length === 0 },
+      { id: 'selectRight', label: '选择右侧形状', sc: 'Ctrl+Right', disabled: () => state.shapes.length === 0 },
       { sep: true },
       { id: 'keepPrev', label: '保留上一张标注', checkable: true, checked: () => state.keepPrev },
     ],
@@ -3222,19 +3349,19 @@ const MENUS = [
       { sep: true },
       { id: 'fillDrawing', label: '填充正在绘制的多边形', checkable: true, checked: () => state.fillDrawing },
       { sep: true },
-      { id: 'hideShapes', label: '隐藏形状(&H)' },
-      { id: 'showShapes', label: '显示形状(&S)' },
-      { id: 'toggleShapes', label: '切换形状显示(&T)', sc: 'T' },
+      { id: 'hideShapes', label: '隐藏形状(&H)', disabled: () => state.shapes.length === 0 },
+      { id: 'showShapes', label: '显示形状(&S)', disabled: () => state.shapes.length === 0 },
+      { id: 'toggleShapes', label: '切换形状显示(&T)', sc: 'T', disabled: () => state.shapes.length === 0 },
       { sep: true },
-      { id: 'zoomIn', label: '放大(&I)', sc: 'Ctrl++' },
-      { id: 'zoomOut', label: '缩小(&Z)', sc: 'Ctrl+-' },
-      { id: 'zoom100', label: '实际大小(&A)', sc: 'Ctrl+0' },
+      { id: 'zoomIn', label: '放大(&I)', sc: 'Ctrl++', disabled: () => !state.image },
+      { id: 'zoomOut', label: '缩小(&Z)', sc: 'Ctrl+-', disabled: () => !state.image },
+      { id: 'zoom100', label: '实际大小(&A)', sc: 'Ctrl+0', disabled: () => !state.image },
       { id: 'keepZoom', label: '保留上一次的缩放(&K)', checkable: true, checked: () => state.keepZoom },
       { sep: true },
-      { id: 'fit', label: '适合窗口(&W)', sc: 'Ctrl+F', checkable: true, checked: () => true },
-      { id: 'fitSelection', label: '适合选区(&E)', sc: 'Ctrl+Shift+F' },
+      { id: 'fit', label: '适合窗口(&W)', sc: 'Ctrl+F', checkable: true, checked: () => state.fitWindow, disabled: () => !state.image },
+      { id: 'fitSelection', label: '适合选区(&E)', sc: 'Ctrl+Shift+F', checkable: true, checked: () => state.fitSelection, disabled: () => !state.image },
       { sep: true },
-      { id: 'bc', label: '亮度/对比度(&B)…' },
+      { id: 'bc', label: '亮度/对比度(&B)…', disabled: () => !state.image },
       { id: 'keepBc', label: '保留上一次的亮度/对比度', checkable: true, checked: () => state.keepBc },
       { sep: true },
     ],
@@ -3658,7 +3785,15 @@ function runAction(id) {
       convertSelectedShape('mask');
       break;
     case 'fitSelection':
-      fitToSelection();
+      if (state.fitSelection) {
+        state.fitSelection = false;
+        toast('已切换为手动缩放');
+      } else if (state.selected < 0) {
+        toast('先选中一个形状');
+      } else {
+        state.fitWindow = false;
+        fitToSelection();
+      }
       break;
     case 'fillDrawing':
       state.fillDrawing = !state.fillDrawing;
@@ -3698,7 +3833,13 @@ function runAction(id) {
       navigate(1);
       break;
     case 'fit':
-      fitToWindow();
+      if (state.fitWindow) {
+        state.fitWindow = false;
+        toast('已切换为手动缩放');
+      } else {
+        state.fitSelection = false;
+        fitToWindow();
+      }
       break;
     case 'zoom100':
       zoomTo(1);
@@ -3772,7 +3913,7 @@ function runAction(id) {
       $('helpModal').hidden = false;
       break;
     case 'tutorial':
-      window.open('https://github.com/wkentaro/labelme/tree/main/tutorial', '_blank', 'noopener');
+      window.open('https://github.com/wkentaro/labelme/tree/main/examples/tutorial', '_blank', 'noopener');
       break;
     case 'admin':
       if (!isAdminUser()) {
@@ -3993,8 +4134,8 @@ document.addEventListener('keydown', (ev) => {
         return;
       case 'f':
         ev.preventDefault();
-        if (ev.shiftKey) fitToSelection();
-        else fitToWindow();
+        if (ev.shiftKey) runAction('fitSelection');
+        else runAction('fit');
         return;
       case '0':
         ev.preventDefault();
@@ -4222,7 +4363,10 @@ function bindUi() {
     if (files && files.length) uploadFiles(files);
   });
 
-  new ResizeObserver(() => redraw()).observe(wrap);
+  new ResizeObserver(() => {
+    if (state.image && state.fitWindow) fitToWindow();
+    else redraw();
+  }).observe(wrap);
 
   window.addEventListener('beforeunload', () => {
     if (state.dirty && state.image) {
