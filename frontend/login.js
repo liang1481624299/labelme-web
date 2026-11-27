@@ -24,8 +24,25 @@ function httpStatusText(status) {
 }
 
 const params = new URLSearchParams(location.search);
-let next = params.get('next') || '/';
-if (!next.startsWith('/') || next.startsWith('//')) next = '/';
+
+/* 与后端 auth._safe_next 对齐：只允许本站绝对路径。浏览器会把反斜杠
+   当成路径分隔符，所以 /\evil 也必须拦掉，否则登录成功后会被带去外站。 */
+function safeNext(raw) {
+  const text = String(raw || '');
+  if (!text || /[\u0000-\u001f]/.test(text) || text.includes('\\') || /%2f|%5c/i.test(text)) {
+    return '/';
+  }
+  if (!text.startsWith('/') || text.startsWith('//')) return '/';
+  try {
+    const parsed = new URL(text, location.origin);
+    if (parsed.origin !== location.origin) return '/';
+    return parsed.pathname + parsed.search + parsed.hash;
+  } catch (err) {
+    return '/';
+  }
+}
+
+let next = safeNext(params.get('next'));
 
 let mode = 'login';
 let ldapHintText = '';
