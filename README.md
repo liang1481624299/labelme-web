@@ -318,6 +318,21 @@ python dev/ldap_mock_check.py     # 13 项：模板/搜索绑定、密码错、�
 | `LABELME_WEB_SSO_LABEL` | 否 | 登录页按钮文字，默认「统一登录（SSO）」 |
 | `LABELME_WEB_SSO_TOKEN_AUTH` | 否 | `post`（默认）或 `basic`（Authorization: Basic） |
 
+### Casdoor 作为 IdP 的实测参数
+
+实训室当前用 Casdoor（组织 `GDUE-CS-802D`）托管账号，`name` 与邮箱都由身份中心下发。实测要点：
+
+- `LABELME_WEB_SSO_ISSUER` 填 Casdoor 根地址（如 `https://id.gdueca.com`），不带应用路径，
+  与 Authentik 的 `/application/o/<slug>/` 形态不同；
+- **`LABELME_WEB_SSO_USERNAME_CLAIM` 必须显式设为 `name`**：Casdoor 签发的 `id_token`
+  里没有 `preferred_username`，账号名在 `name`，显示名在 `displayName`。保持默认值会
+  回退到 `email`，而带 `@` 的邮箱不符合本项目的账号名规则，登录会直接失败；
+- Casdoor 应用的回调白名单**逐条精确匹配**，不支持 `*` 通配，需把整条
+  `https://<域名>/api/auth/sso/callback` 填进去；
+- 服务端要能解析 IdP 域名。若域名只解析出 IPv6 而机器没有 IPv6 出口，会报
+  `dns: unrecognized name`，可在 `/etc/hosts` 补 `127.0.0.1 <IdP 域名>` 指向本机反代，
+  请求仍走 nginx 的 443 入口，TLS 与证书校验不受影响。
+
 流程与约定：
 
 1. 登录页出现「用<显示名>登录」按钮 → `GET /api/auth/sso/start` → 302 到 IdP 授权页
