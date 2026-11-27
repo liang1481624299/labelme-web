@@ -35,7 +35,19 @@ from backend import ldap_auth, settings_store, sso_auth
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("LABELME_WEB_DB") or (BASE_DIR / "var" / "labelme-web.db"))
 SESSION_COOKIE = "lmweb_session"
-SESSION_DAYS = 7
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return max(minimum, min(maximum, int(os.environ.get(name, "") or default)))
+    except ValueError:
+        return default
+
+
+SESSION_DAYS = _env_int("LABELME_WEB_SESSION_DAYS", 7, 1, 30)
+SESSION_IDLE_MINUTES = _env_int("LABELME_WEB_SESSION_IDLE_MINUTES", 30, 5, 1440)
+SESSION_IDLE_SECONDS = SESSION_IDLE_MINUTES * 60
+SESSION_TOUCH_SECONDS = 60       # 活跃请求最多每分钟写一次 last_seen，避免每次 API 都写库
 BCRYPT_ROUNDS = 12
 PASSWORD_MIN = 8
 PASSWORD_MAX_BYTES = 72          # bcrypt 的硬上限，超过直接拒绝而不是悄悄截断
@@ -82,13 +94,22 @@ def init_db() -> None:
                 token_hash TEXT PRIMARY KEY,
                 user_id    INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL
+                expires_at TEXT NOT NULL,
+                last_seen_at TEXT
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
             """
+        )
+        # 旧的 auth_sessions 只有 expires_at；补 last_seen_at 才能做空闲超时。
+        session_cols = {r["name"] for r in conn.execute("PRAGMA table_info(auth_sessions)").fetchall()}
+        if "last_seen_at" not in session_cols:
+            conn.execute("ALTER TABLE auth_sessions ADD COLUMN last_seen_at TEXT")
+        conn.execute(
+            "UPDATE auth_sessions SET last_seen_at=created_at "
+            "WHERE last_seen_at IS NULL OR last_seen_at=''"
         )
         # LDAP 接入层：影子账号要记来源和外部 ID（老库用 ALTER 补齐，幂等）
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -222,12 +243,20 @@ def _token_hash(token: str) -> str:
 
 def issue_session(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
-    expires = (datetime.now() + timedelta(days=SESSION_DAYS)).isoformat(" ", timespec="seconds")
+    now = datetime.now()
+    now_text = now.isoformat(" ", timespec="seconds")
+    expires = (now + timedelta(days=SESSION_DAYS)).isoformat(" ", timespec="seconds")
+    idle_cutoff = (now - timedelta(seconds=SESSION_IDLE_SECONDS)).isoformat(" ", timespec="seconds")
     with connect() as conn:
-        conn.execute("DELETE FROM auth_sessions WHERE expires_at < ?", (now_iso(),))
+        # 顺手清掉绝对过期和长时间无操作的会话，避免表无限增长。
         conn.execute(
-            "INSERT INTO auth_sessions(token_hash, user_id, created_at, expires_at) VALUES(?,?,?,?)",
-            (_token_hash(token), user_id, now_iso(), expires),
+            "DELETE FROM auth_sessions WHERE expires_at < ? OR last_seen_at < ?",
+            (now_text, idle_cutoff),
+        )
+        conn.execute(
+            "INSERT INTO auth_sessions(token_hash, user_id, created_at, expires_at, last_seen_at) "
+            "VALUES(?,?,?,?,?)",
+            (_token_hash(token), user_id, now_text, expires, now_text),
         )
         conn.commit()
     return token
@@ -257,14 +286,32 @@ def user_from_request(request: Request) -> Optional[sqlite3.Row]:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
+    now_dt = datetime.now()
+    now = now_dt.isoformat(" ", timespec="seconds")
+    idle_cutoff = (now_dt - timedelta(seconds=SESSION_IDLE_SECONDS)).isoformat(" ", timespec="seconds")
+    touch_cutoff = (now_dt - timedelta(seconds=SESSION_TOUCH_SECONDS)).isoformat(" ", timespec="seconds")
     with connect() as conn:
         row = conn.execute(
             "SELECT u.* FROM auth_sessions s JOIN users u ON u.id = s.user_id "
-            "WHERE s.token_hash=? AND s.expires_at > ?",
-            (_token_hash(token), now_iso()),
+            "WHERE s.token_hash=? AND s.expires_at > ? AND s.last_seen_at >= ?",
+            (_token_hash(token), now, idle_cutoff),
         ).fetchone()
-    if not row or not row["enabled"]:
-        return None
+        if row and not row["enabled"]:
+            return None
+        if not row:
+            # 过期或空闲超时的 token 直接删掉，不留可被反复尝试的会话记录。
+            conn.execute(
+                "DELETE FROM auth_sessions WHERE token_hash=? AND (expires_at <= ? OR last_seen_at < ?)",
+                (_token_hash(token), now, idle_cutoff),
+            )
+            conn.commit()
+            return None
+        # 滑动空闲窗口：活跃请求续期，但绝对 expires_at 不延长。
+        conn.execute(
+            "UPDATE auth_sessions SET last_seen_at=? WHERE token_hash=? AND last_seen_at < ?",
+            (now, _token_hash(token), touch_cutoff),
+        )
+        conn.commit()
     return row
 
 

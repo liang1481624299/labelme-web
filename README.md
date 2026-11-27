@@ -148,8 +148,10 @@ data/shiroko/电路板A/114.json    ← 该图的标注
   “文件 → 设置”里的主题、自动保存、颜色模式、跨图延续、标签来源等按账号隔离。
 - 密码：**只存 bcrypt 哈希**（`$2b$12$...`，cost 12），库里没有明文，日志也不打密码。
   密码 8 位起，最长 72 字节（bcrypt 上限，超了直接拒绝，不悄悄截断）。
-- 登录态：服务端随机 token，cookie `lmweb_session`（HttpOnly / SameSite=Lax，7 天），
-  库里只存 token 的 sha256；改角色、禁用、改密码都会立刻作废旧登录态。
+- 登录态：服务端随机 token，cookie `lmweb_session`（HttpOnly / SameSite=Lax，默认 7 天绝对上限），
+  库里只存 token 的 sha256；**默认 30 分钟无操作即失效**，活跃请求会滑动续期但不会延长 7 天绝对上限。
+  改角色、禁用、改密码都会立刻作废旧登录态。空闲/绝对过期可用
+  `LABELME_WEB_SESSION_IDLE_MINUTES`（5–1440）与 `LABELME_WEB_SESSION_DAYS`（1–30）调整。
 - 角色两级：
   - `admin`：能进 `/admin` 管账号；
   - `annotator`：只能标注，访问 `/admin` 返回 403。

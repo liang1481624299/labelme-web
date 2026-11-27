@@ -103,9 +103,35 @@ async function req(method, path, body, isForm) {
   return type.includes('json') ? res.json() : res.text();
 }
 
+/* 服务端空闲超时只在有请求时续期；画布操作不产生请求，所以这里在真实用户
+   活动后定时发一个最轻的 /api/auth/me 心跳，避免“正在标注却被判空闲”。 */
+const SESSION_PING_MS = 5 * 60 * 1000;
+const SESSION_ACTIVE_MS = 5 * 60 * 1000;
+let sessionLastPing = 0;
+let sessionLastActivity = 0;
+
+function startSessionHeartbeat() {
+  const markActive = () => { sessionLastActivity = Date.now(); };
+  ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach((name) => {
+    window.addEventListener(name, markActive, { passive: true });
+  });
+  setInterval(async () => {
+    const now = Date.now();
+    if (document.visibilityState === 'hidden') return;
+    if (now - sessionLastActivity > SESSION_ACTIVE_MS) return;
+    if (now - sessionLastPing < SESSION_PING_MS) return;
+    sessionLastPing = now;
+    try {
+      const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+      if (res.status === 401) {
+        location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+      }
+    } catch (e) { /* 网络抖动时不跳登录，下一次活动再试 */ }
+  }, 60 * 1000);
+}
+
 let toastTimer = null;
-function toast(msg, isError) {
-  const el = $('toast');
+function toast(msg, isError) {  const el = $('toast');
   el.textContent = msg;
   el.classList.toggle('error', !!isError);
   el.hidden = false;
@@ -4493,6 +4519,7 @@ async function boot() {
   buildToolstrip();
   bindUi();
   bindSettingsUi();
+  startSessionHeartbeat();
   setTool('select');
   showEmpty(true);
   initLiveChannel();
