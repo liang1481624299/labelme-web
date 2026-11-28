@@ -149,7 +149,7 @@ curl -fsS http://127.0.0.1:9631/api/health
 | --- | --- | --- |
 | 前端 | HTML + CSS + 原生 JS | `index.html`、`login.html`、`admin.html` 由 FastAPI 静态托管，无构建步骤 |
 | 后端 | Python 3.10+ / FastAPI / Uvicorn | 单进程提供 API、页面路由和静态文件；只监听 `127.0.0.1:9631` |
-| 网关 | NGINX | 对公网监听 `9630`，反代到 9631；502/503/504 有静态兜底页 |
+| 网关 | NGINX | 默认只监听 `127.0.0.1:9630`，反代到 9631；公网入口由外层 HTTPS 反代，502/503/504 有静态兜底页 |
 | 数据 | 文件系统 + SQLite | 图片/JSON/标签/草稿在 `data/`；账号、设置、绑定、上传流水在 `var/labelme-web.db` |
 | 认证 | bcrypt + 服务端会话 + CSRF | 支持本地账号、LDAP/AD、OIDC SSO；外部身份绑定到同一个本地账号 |
 | 部署 | systemd + `deploy/install.sh` | 源码部署，无 Docker；服务用户 `labelme`，数据目录单独授权 |
@@ -232,10 +232,10 @@ cd labelme-web
 sudo bash deploy/install.sh
 ```
 
-默认安装到 `/opt/labelme-web`，启动后：
+默认安装到 `/opt/labelme-web`。安装生成的 NGINX 默认只监听 `127.0.0.1:9630`，适合由外层 HTTPS 反代到域名；如果要从别的机器直连，需要把 `deploy/nginx.conf` 的 `listen` 改成 `0.0.0.0:9630`。启动后：
 
-- 前端：`http://<服务器IP>:9630/`
-- 管理后台：`http://<服务器IP>:9630/admin`（桌面标注页没有入口，只能手敲或从手机阻断页进入）
+- 前端：`http://127.0.0.1:9630/`（或外层反代后的 `https://<域名>/`）
+- 管理后台：`/admin`（桌面标注页没有入口，只能手敲或从手机阻断页进入）
 - 健康检查：`http://127.0.0.1:9631/api/health`
 - 服务日志：`journalctl -u labelme-web -f`
 
@@ -247,12 +247,12 @@ sudo bash deploy/install.sh /srv/labelme-web
 
 ### 首次使用
 
-1. 打开 `http://<host>:9630/`，进入登录页。
+1. 打开 `https://<域名>/`（或本机 `http://127.0.0.1:9630/`），进入登录页。
 2. 点“注册”创建第一个账号；**第一个账号自动是管理员**。
 3. 登录后进入标注页，先新建工程，再上传图片。
 4. 管理后台地址是 `/admin`；手机端可以从阻断页的“前往管理员后台”进入。
 
-生产 HTTPS 只需在 NGINX 的 server 块补证书；登录 cookie 会根据 `X-Forwarded-Proto: https` 自动加 `Secure`，也可用 `LABELME_WEB_COOKIE_SECURE=1` 强制。
+HTTPS 通常在外层反代终止；如果让本机 NGINX 直接对外，就在 `deploy/nginx.conf` 的 server 块补证书并把 `listen` 改成对外地址。登录 cookie 会根据 `X-Forwarded-Proto: https` 自动加 `Secure`，也可用 `LABELME_WEB_COOKIE_SECURE=1` 强制。
 
 ## 配置说明
 
@@ -260,7 +260,7 @@ sudo bash deploy/install.sh /srv/labelme-web
 
 | 角色 | 端口 | 监听方 |
 | --- | --- | --- |
-| 前端 / 网关 | **9630** | 开发：`dev/serve.py`；生产：NGINX |
+| 前端 / 网关 | **9630** | 开发：`dev/serve.py`；生产：NGINX 默认只绑 `127.0.0.1`，由外层反代到公网 |
 | 后端 API | **9631** | uvicorn，只绑 `127.0.0.1` |
 
 前端所有请求使用相对路径 `/api/...`，开发和生产都同源反代，不需要 CORS。
