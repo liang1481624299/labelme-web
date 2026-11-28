@@ -283,6 +283,22 @@ LABELME_WEB_LDAP_BIND_PASSWORD=********
 LABELME_WEB_LDAP_ADMIN_GROUP=CN=labelme-admins,OU=groups,DC=lab,DC=local
 ```
 
+### Casdoor 内置 LDAP（当前生产）
+
+Casdoor 自带 LDAP 服务监听 `127.0.0.1:389`，DN 形如
+`cn=<用户名>,ou=<组织名>,dc=casdoor,dc=com`，密码就是 Casdoor 登录密码：
+
+```bash
+LABELME_WEB_LDAP_URL=ldap://127.0.0.1:389
+LABELME_WEB_LDAP_BASE_DN=ou=GDUE-CS-802D,dc=casdoor,dc=com
+LABELME_WEB_LDAP_USER_DN=cn={username},ou=GDUE-CS-802D,dc=casdoor,dc=com
+LABELME_WEB_LDAP_LABEL=Casdoor LDAP
+```
+
+生产已按这组参数启用；`casdoor` 用户和 Labelme 的 `shiroko` 同名，所以必须先用
+Labelme 本地密码登录，再到「账号与安全」绑定 Casdoor LDAP，`cn=shiroko,...` 不会被
+LDAP 登录自动接管。
+
 行为约定（这几条是刻意设计，不是实现细节）：
 
 - 认证成功后，若该 LDAP 身份已经绑定到某个 Labelme 账号，直接登录那个账号；
