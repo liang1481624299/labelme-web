@@ -705,10 +705,10 @@
   }
 }
 
-@media (max-height: 820px) and (min-width: 941px) {
+@media (max-height: 940px) and (min-width: 941px) {
   .hero-visual { display: none; }
-  .hero-copy { margin-top: 42px; }
-  .hero-points { margin-top: 30px; }
+  .hero-copy { margin-top: 40px; }
+  .hero-points { margin-top: 26px; }
 }
 
 @media (any-pointer: coarse) {
