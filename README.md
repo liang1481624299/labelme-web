@@ -2,6 +2,8 @@
 
 <p align="center">把桌面版 <strong>labelme 7.11</strong> 的标注工作台搬进浏览器：工程、标签集、标注 JSON 与桌面版同构，标注结果可以直接打包回桌面版继续用。</p>
 
+<p align="center"><strong><a href="https://lab.gdueca.com/login">在线体验：https://lab.gdueca.com/login</a></strong></p>
+
 <p align="center">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square">
   <img alt="FastAPI 0.110+" src="https://img.shields.io/badge/FastAPI-0.110%2B-009688?style=flat-square">
@@ -20,6 +22,7 @@
 </p>
 
 <p align="center">
+  <strong><a href="https://lab.gdueca.com/login">在线体验</a></strong> ·
   <a href="#开发规范">开发规范</a> ·
   <a href="#本地体验">本地体验</a> ·
   <a href="#功能介绍">功能介绍</a> ·
@@ -41,7 +44,7 @@
 - **工程与数据**：按“账号 → 工程”组织数据，标注 JSON 与桌面版 labelme 7.11.0 同构；自动保存、崩溃草稿、工程打包下载都在服务端完成。
 - **接入与运维**：本地账号、LDAP/AD、OIDC SSO 三种登录方式；`/admin` 管理后台；NGINX + systemd 源码部署，不需要 Docker。
 
-当前生产示例：<https://lab.gdueca.com/login>。仓库当前版本对应 labelme `7.11.0`。
+**在线体验**：<https://lab.gdueca.com/login>。仓库当前版本对应 labelme `7.11.0`。
 
 ## 开发规范
 
