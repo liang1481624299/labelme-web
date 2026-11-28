@@ -62,10 +62,11 @@ function setMode(value) {
     $('ldapHint').textContent = ldapHintText;
     $('ldapHint').hidden = false;
   }
-  $('authTitle').textContent = value === 'register' ? '创建账号' : '用户登录';
+  $('authKicker').textContent = value === 'register' ? 'CREATE ACCOUNT / 02' : 'ACCOUNT ACCESS / 01';
+  $('authTitle').textContent = value === 'register' ? '创建账号' : '欢迎回来';
   $('authSub').textContent = value === 'register'
-    ? '注册后即可进入标注工作台'
-    : '欢迎回来，请登录以继续使用';
+    ? '注册后即可进入标注工作台。'
+    : '使用实训室账号，继续你的标注工作。';
   $('authSubmitLabel').textContent = value === 'register' ? '注册并登录' : '登录';
   $('password').autocomplete = value === 'register' ? 'new-password' : 'current-password';
   showError('');

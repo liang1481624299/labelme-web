@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#07090f" />
+  <meta name="theme-color" content="#07090d" />
   <title>登录 · Labelme</title>
   <link rel="stylesheet" href="auth.css" />
   <link rel="stylesheet" href="login.css" />
@@ -11,62 +11,119 @@
 </head>
 <body class="auth-body">
   <div class="auth-sky" aria-hidden="true">
-    <span class="sky-blob b1"></span>
-    <span class="sky-blob b2"></span>
+    <span class="sky-orb orb-a"></span>
+    <span class="sky-orb orb-b"></span>
     <span class="sky-grid"></span>
   </div>
 
   <div class="auth-layout">
     <section class="auth-hero">
-      <div class="hero-top">
-        <span class="hero-logo">LM</span>
-        <span class="hero-site" id="heroSite">Labelme</span>
+      <header class="hero-top">
+        <span class="hero-logo" aria-hidden="true">L</span>
+        <div class="hero-id">
+          <b id="heroSite">Labelme</b>
+          <span>IMAGE ANNOTATION SYSTEM</span>
+        </div>
+        <span class="hero-version">v7.11.0</span>
+      </header>
+
+      <div class="hero-copy">
+        <p class="hero-kicker"><span class="hero-rule"></span>GDUE-CS-802D / SECURE WORKSPACE</p>
+        <h1>让每一张图，<br /><em>都成为数据。</em></h1>
+        <p class="hero-sub">
+          图像标注、工程协作与结果导出，都在同一条流水线里。用实训室统一账号登录，继续你的标注工作。
+        </p>
       </div>
-      <h1 class="hero-title">一个账号，<br /><span>标注全流程</span></h1>
-      <p class="hero-sub">
-        图像标注、工程协作、结果导出都在同一个工作台里；账号由实训室身份中心统一托管，登一次即可通行。
-      </p>
+
       <ul class="hero-points">
-        <li><b>统一登录</b>Casdoor / OIDC 单点认证，一次授权全线可用</li>
-        <li><b>账号沿用</b>原有本地账号直接绑定，历史工程与标注不留失</li>
-        <li><b>权限分级</b>管理员与标注员分离，账号按需启用</li>
+        <li>
+          <span class="hero-index">01</span>
+          <div>
+            <b>统一身份</b>
+            <p>Casdoor / OIDC 单点接入，一次授权通行全部服务。</p>
+          </div>
+        </li>
+        <li>
+          <span class="hero-index">02</span>
+          <div>
+            <b>本地兼容</b>
+            <p>原有账号可直接绑定，历史工程与标注完整保留。</p>
+          </div>
+        </li>
+        <li>
+          <span class="hero-index">03</span>
+          <div>
+            <b>权限分级</b>
+            <p>管理员与标注员分离，账号按需启用、按人授权。</p>
+          </div>
+        </li>
       </ul>
-      <p class="hero-meta">GDUE-CS-802D · 图像标注平台</p>
+
+      <div class="hero-visual" aria-hidden="true">
+        <svg viewBox="0 0 540 208" role="presentation">
+          <rect class="hv-frame" x="1" y="1" width="538" height="206" rx="18" />
+          <path class="hv-line" d="M18 52h14M18 52v14M522 52h-14M522 52v14M18 156h14M18 156v-14M522 156h-14M522 156v-14" />
+          <path class="hv-line faint" d="M0 104h540M270 0v208" />
+          <circle class="hv-shape" cx="102" cy="95" r="40" />
+          <path class="hv-shape" d="M210 138 252 72l38 62z" />
+          <rect class="hv-shape" x="336" y="72" width="84" height="66" rx="8" />
+          <rect class="hv-box" x="52" y="48" width="106" height="96" rx="6" />
+          <rect class="hv-box" x="196" y="56" width="94" height="94" rx="6" />
+          <rect class="hv-box" x="322" y="58" width="112" height="94" rx="6" />
+          <path class="hv-tick" d="M52 126h-6M52 126v6M158 126h6M158 126v6" />
+          <g class="hv-label">
+            <rect x="52" y="29" width="52" height="17" rx="4" /><text x="58" y="41">PERSON</text>
+          </g>
+          <g class="hv-label">
+            <rect x="196" y="36" width="58" height="17" rx="4" /><text x="202" y="48">OBJECT</text>
+          </g>
+          <g class="hv-label">
+            <rect x="322" y="38" width="48" height="17" rx="4" /><text x="328" y="50">SIGNAL</text>
+          </g>
+          <path class="hv-cursor" d="M294 128v26M281 141h26" />
+          <circle class="hv-cursor-dot" cx="294" cy="141" r="3" />
+        </svg>
+      </div>
+
+      <footer class="hero-foot">
+        <span>GDUE-CS-802D</span>
+        <span>图像标注平台 · 2026</span>
+      </footer>
     </section>
 
     <main class="auth-panel">
-      <div class="auth-card">
+      <header class="auth-panel-top">
         <div class="auth-brand" aria-label="当前站点">
           <span class="dot" aria-hidden="true"></span>
           <span>Labelme</span>
           <span class="ver">7.11.0</span>
         </div>
-
-        <div class="auth-head">
-          <span class="auth-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false">
-              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-              <path d="M10 17l5-5-5-5" />
-              <path d="M15 12H3" />
-            </svg>
-          </span>
-          <h2 class="auth-title" id="authTitle">用户登录</h2>
-          <p class="auth-sub" id="authSub">欢迎回来，请登录以继续使用</p>
-        </div>
-
         <div class="auth-tabs" aria-label="登录或注册">
           <button class="auth-tab active" data-tab="login" type="button" aria-pressed="true">登录</button>
           <button class="auth-tab" data-tab="register" type="button" aria-pressed="false">注册</button>
         </div>
+      </header>
+
+      <div class="auth-card">
+        <div class="auth-head">
+          <p class="auth-kicker" id="authKicker">ACCOUNT ACCESS / 01</p>
+          <h2 class="auth-title" id="authTitle">欢迎回来</h2>
+          <p class="auth-sub" id="authSub">使用实训室账号，继续你的标注工作。</p>
+        </div>
 
         <form id="authForm" autocomplete="on" novalidate>
           <div class="field">
-            <label class="field-label" for="username">账号</label>
+            <label class="field-label" for="username">
+              <span>账号</span><small>USERNAME</small>
+            </label>
             <input id="username" name="username" type="text" autocomplete="username"
                    placeholder="2–32 位，中英文 / 数字 / _ - ." required />
           </div>
+
           <div class="field">
-            <label class="field-label" for="password">密码</label>
+            <label class="field-label" for="password">
+              <span>密码</span><small>PASSWORD</small>
+            </label>
             <div class="input-wrap">
               <input id="password" name="password" type="password" autocomplete="current-password"
                      class="has-affix" placeholder="至少 8 位" required />
@@ -85,17 +142,18 @@
               </button>
             </div>
           </div>
+
           <p class="auth-hint" id="registerHint" hidden>
             第一次注册的账号会自动成为管理员；之后注册的都是普通标注员（需管理员启用后可用）。
           </p>
           <p class="auth-hint" id="ldapHint" hidden></p>
           <div class="auth-error" id="authError" role="alert" hidden></div>
+
           <button class="auth-submit" id="authSubmit" type="submit">
-            <svg class="submit-ico" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-              <path d="M22 2 11 13" />
-              <path d="M22 2 15 22l-4-9-9-4 20-7z" />
-            </svg>
             <span id="authSubmitLabel">登录</span>
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M4 12h15M13 6l6 6-6 6" />
+            </svg>
           </button>
         </form>
 
@@ -105,12 +163,14 @@
         </div>
 
         <p class="auth-foot">
-          登录后才能进入标注页；账号由管理员统一维护。
+          登录表示你已获准使用本实训室资源；账号由管理员统一维护。
         </p>
       </div>
+
       <p class="auth-legal">© 2026 GDUE-CS-802D · 账号问题请联系实训室管理员</p>
     </main>
   </div>
+
   <script src="login.js"></script>
   <script src="mobile-gate.js"></script>
 </body>
