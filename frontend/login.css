@@ -142,7 +142,7 @@
 }
 
 .hero-copy {
-  margin-top: clamp(54px, 10vh, 112px);
+  margin-top: clamp(44px, 8vh, 96px);
   max-width: 640px;
 }
 .hero-kicker {
@@ -182,7 +182,7 @@
 
 .hero-points {
   list-style: none;
-  margin: clamp(32px, 6vh, 60px) 0 0;
+  margin: clamp(26px, 4vh, 46px) 0 0;
   padding: 0;
   width: min(100%, 580px);
   border-top: 1px solid rgba(255, 255, 255, .08);
@@ -215,7 +215,7 @@
 }
 
 .hero-visual {
-  margin-top: clamp(22px, 4vh, 46px);
+  margin-top: clamp(16px, 2.6vh, 34px);
   width: min(100%, 540px);
   opacity: .88;
 }
@@ -273,7 +273,7 @@
   justify-content: space-between;
   gap: 18px;
   margin-top: auto;
-  padding-top: clamp(20px, 4vh, 38px);
+  padding-top: clamp(16px, 3vh, 30px);
   color: #556072;
   font: 9px/1.4 ui-monospace, "SFMono-Regular", Consolas, monospace;
   letter-spacing: .16em;
