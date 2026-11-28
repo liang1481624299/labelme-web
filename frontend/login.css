@@ -1,6 +1,12 @@
 /* Labelme 登录页：深色品牌画布 + 暖色纸张登录区。
    登录表单不再使用悬浮玻璃卡片，整个右侧是一张独立的“登录工作纸”。 */
 
+.auth-html {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 .auth-body {
   --ink: #111316;
   --ink-soft: #63675e;
@@ -639,6 +645,10 @@
 
 /* ---------------------------------------------------------------- 响应式 */
 @media (max-width: 940px) {
+  .auth-html {
+    height: auto;
+    overflow-y: auto;
+  }
   .auth-body {
     height: auto;
     overflow-y: auto;
