@@ -682,6 +682,28 @@
   }
 }
 
+@media (max-width: 600px) {
+  .auth-hero {
+    padding: 22px 20px 26px;
+  }
+  .hero-copy {
+    margin-top: 24px;
+  }
+  .hero-kicker {
+    margin-bottom: 12px;
+  }
+  .hero-copy h1 {
+    font-size: 30px;
+    line-height: 1.12;
+  }
+  .hero-sub {
+    display: none;
+  }
+  .auth-panel {
+    padding-top: 72px;
+  }
+}
+
 @media (max-width: 380px) {
   .auth-hero {
     padding: 22px 18px 30px;
@@ -698,7 +720,7 @@
     letter-spacing: .10em;
   }
   .hero-copy h1 {
-    font-size: 32px;
+    font-size: 29px;
   }
   .auth-submit {
     font-size: 14px;
@@ -706,7 +728,12 @@
 }
 
 @media (max-height: 940px) and (min-width: 941px) {
-  .hero-visual { display: none; }
+  .hero-visual {
+    display: block;
+    width: min(100%, 420px);
+    margin-top: 18px;
+    opacity: .8;
+  }
   .hero-copy { margin-top: 40px; }
   .hero-points { margin-top: 26px; }
 }
