@@ -146,7 +146,9 @@ def _connection(server, user: Optional[str] = None, password: Optional[str] = No
         server,
         user=user,
         password=password,
-        receive_timeout=_timeout(),
+        # ldap3 的 receive_timeout 会直接进 socket；Python 3.14 下传 float
+        # 会报 "required argument is not an integer"，这里统一取整。
+        receive_timeout=max(1, int(_timeout())),
         auto_bind=False,
         raise_exceptions=False,
         read_only=True,
