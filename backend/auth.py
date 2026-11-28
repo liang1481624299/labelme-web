@@ -104,6 +104,16 @@ def init_db() -> None:
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS identity_links (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       INTEGER NOT NULL,
+                provider      TEXT NOT NULL,
+                external_id   TEXT NOT NULL,
+                external_name TEXT,
+                created_at    TEXT NOT NULL,
+                UNIQUE(provider, external_id),
+                UNIQUE(user_id, provider)
+            );
             """
         )
         # 旧的 auth_sessions 只有 expires_at；补 last_seen_at 才能做空闲超时。
@@ -126,6 +136,19 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN source TEXT NOT NULL DEFAULT 'local'")
         if "external_id" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN external_id TEXT")
+        # 老版本自动创建的 LDAP/SSO 影子账号，补成显式绑定记录；
+        # 之后登录只认 identity_links，不再按同名直接接管本地账号。
+        legacy = conn.execute(
+            "SELECT id, username, source, external_id FROM users "
+            "WHERE source IN ('ldap','sso') AND external_id IS NOT NULL AND external_id<>''"
+        ).fetchall()
+        for row in legacy:
+            conn.execute(
+                "INSERT OR IGNORE INTO identity_links(user_id, provider, external_id, external_name, created_at) "
+                "VALUES(?,?,?,?,?)",
+                (row["id"], row["source"], row["external_id"], row["username"],
+                 datetime.now().isoformat(" ", timespec="seconds")),
+            )
         conn.commit()
 
 
@@ -208,33 +231,173 @@ def find_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
         return conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
 
 
-# ------------------------------------------------------------------ external shadow users
-def external_user(username: str, external_id: str, source: str, is_admin: bool) -> sqlite3.Row:
-    """外部身份（LDAP / SSO）认证通过后落一条本地影子账号。
+# ------------------------------------------------------------------ external identities
+PROVIDER_LABELS = {"ldap": "LDAP", "sso": "SSO"}
+PROVIDERS = tuple(PROVIDER_LABELS)
 
-    * 账号名必须符合本站命名规则（它同时是 data/ 下的目录名）
-    * 已存在的同名本地账号不覆盖密码，只按组映射补管理员权限（不降级，避免误锁）
+
+def provider_label(provider: str) -> str:
+    return PROVIDER_LABELS.get(provider, provider)
+
+
+def has_local_password(row: sqlite3.Row) -> bool:
+    """bcrypt 哈希以 $2 开头；影子账号用 !ldap / !sso 占位，不能本地登录。"""
+    return str(row["password_hash"] or "").startswith("$2")
+
+
+def find_identity(provider: str, external_id: str) -> Optional[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM identity_links WHERE provider=? AND external_id=?",
+            (provider, external_id),
+        ).fetchone()
+
+
+def find_identity_for_user(user_id: int, provider: str) -> Optional[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM identity_links WHERE user_id=? AND provider=?",
+            (user_id, provider),
+        ).fetchone()
+
+
+def list_identities(user_id: int) -> List[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM identity_links WHERE user_id=? ORDER BY provider", (user_id,)
+        ).fetchall()
+
+
+def _promote_admin(user_id: int) -> sqlite3.Row:
+    with connect() as conn:
+        conn.execute("UPDATE users SET role='admin' WHERE id=?", (user_id,))
+        conn.commit()
+    return find_user_by_id(user_id)
+
+
+def link_identity(user_id: int, provider: str, external_id: str, external_name: str = "") -> sqlite3.Row:
+    """把外部身份绑到当前账号；一个账号每个 provider 只能绑一个。"""
+    if provider not in PROVIDERS:
+        raise HTTPException(status_code=400, detail="provider 只能是 ldap 或 sso")
+    ext = str(external_id or "").strip()
+    if not ext:
+        raise HTTPException(status_code=400, detail="外部身份缺少唯一 ID")
+    with _LOCK:
+        owner = find_identity(provider, ext)
+        if owner is not None:
+            if owner["user_id"] != user_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"这个 {provider_label(provider)} 身份已经绑定了其他 Labelme 账号",
+                )
+            if external_name and owner["external_name"] != external_name:
+                with connect() as conn:
+                    conn.execute(
+                        "UPDATE identity_links SET external_name=? WHERE id=?",
+                        (external_name, owner["id"]),
+                    )
+                    conn.commit()
+            return owner
+        current = find_identity_for_user(user_id, provider)
+        if current is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"当前账号已经绑定了另一个 {provider_label(provider)} 身份，请先解绑",
+            )
+        if find_user_by_id(user_id) is None:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO identity_links(user_id, provider, external_id, external_name, created_at) "
+                "VALUES(?,?,?,?,?)",
+                (user_id, provider, ext, external_name or None, now_iso()),
+            )
+            conn.commit()
+        return find_identity(provider, ext)
+
+
+def bindings_payload(user_id: int) -> Dict[str, Any]:
+    """给「设置 → 账号与安全」用：只返回绑定状态和显示名，不泄露 DN / sub。"""
+    row = find_user_by_id(user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    links = {item["provider"]: item for item in list_identities(user_id)}
+    ldap = ldap_auth.public_config()
+    sso = sso_auth.public_config()
+    return {
+        "username": row["username"],
+        "source": row["source"] if "source" in row.keys() else "local",
+        "has_local_password": has_local_password(row),
+        "available": {
+            "ldap": {"enabled": bool(ldap.get("enabled")), "label": ldap.get("label") or "LDAP"},
+            "sso": {"enabled": bool(sso.get("enabled")), "label": sso.get("label") or "SSO"},
+        },
+        "bindings": {
+            provider: {
+                "bound": provider in links,
+                "external_name": links[provider]["external_name"] if provider in links else None,
+                "created_at": links[provider]["created_at"] if provider in links else None,
+            }
+            for provider in PROVIDERS
+        },
+    }
+
+
+def external_user(username: str, external_id: str, source: str, is_admin: bool) -> sqlite3.Row:
+    """外部身份认证后取对应本地账号。
+
+    * 已有 identity_links 绑定时，直接登录被绑定的本地账号；
+    * 没有绑定时，只允许“该外部账号名在本地不存在”的情况自动建影子账号；
+    * 如果同名本地账号已存在，绝不自动接管，必须先用本地密码登录后在账号设置里绑定。
     """
     if not USERNAME_RE.match(username or ""):
         raise HTTPException(status_code=403, detail="该外部账号名不符合本站命名规则（2–32 位，中英文/数字/_ - .）")
+    if source not in PROVIDERS:
+        raise HTTPException(status_code=400, detail="不支持的外部身份类型")
     with _LOCK:
+        link = find_identity(source, external_id)
+        if link is not None:
+            row = find_user_by_id(link["user_id"])
+            if row is None:
+                # 管理员删账号时理论上已清理；这里兜底孤儿绑定。
+                with connect() as conn:
+                    conn.execute("DELETE FROM identity_links WHERE id=?", (link["id"],))
+                    conn.commit()
+            else:
+                if is_admin and row["role"] != "admin":
+                    row = _promote_admin(row["id"])
+                return row
+
         row = find_user(username)
-        if row is None:
-            role = "admin" if (is_admin or count_users() == 0) else "annotator"
-            with connect() as conn:
-                cur = conn.execute(
-                    "INSERT INTO users(username, password_hash, role, enabled, created_at, last_login_at, source, external_id) "
-                    "VALUES(?,?,?,1,?,?,?,?)",
-                    (username, "!" + source, role, now_iso(), now_iso(), source, external_id),
-                )
-                conn.commit()
-            return find_user_by_id(cur.lastrowid)
-        if is_admin and row["role"] != "admin":
-            with connect() as conn:
-                conn.execute("UPDATE users SET role='admin' WHERE id=?", (row["id"],))
-                conn.commit()
-            row = find_user_by_id(row["id"])
-        return row
+        if row is not None:
+            # 兼容老版本：source/external_id 对得上的影子账号补一条绑定。
+            legacy_source = row["source"] if "source" in row.keys() else ""
+            legacy_external = row["external_id"] if "external_id" in row.keys() else None
+            if legacy_source == source and legacy_external == external_id:
+                link_identity(row["id"], source, external_id, username)
+                if is_admin and row["role"] != "admin":
+                    row = _promote_admin(row["id"])
+                return row
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"这个 {provider_label(source)} 身份还没有绑定到 Labelme。"
+                    f"请先用本地密码登录同名账号，再到「设置 → 账号与安全」绑定；"
+                    f"系统不会按同名自动接管已有账号。"
+                ),
+            )
+
+        role = "admin" if (is_admin or count_users() == 0) else "annotator"
+        with connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO users(username, password_hash, role, enabled, created_at, last_login_at, source, external_id) "
+                "VALUES(?,?,?,1,?,?,?,?)",
+                (username, "!" + source, role, now_iso(), now_iso(), source, external_id),
+            )
+            conn.commit()
+        user_id = cur.lastrowid
+        link_identity(user_id, source, external_id, username)
+        return find_user_by_id(user_id)
 
 
 def ldap_shadow_user(lu: "ldap_auth.LdapUser") -> sqlite3.Row:
@@ -548,6 +711,71 @@ def auth_methods() -> Dict[str, Any]:
     }
 
 
+@router.get("/bindings")
+def get_bindings(request: Request) -> Dict[str, Any]:
+    row = user_from_request(request)
+    if row is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    return bindings_payload(row["id"])
+
+
+@router.post("/bind/ldap")
+def bind_ldap(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """已登录账号主动验证 LDAP 密码后，把该 LDAP 身份绑到当前账号。"""
+    row = user_from_request(request)
+    if row is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    if not ldap_auth.enabled():
+        raise HTTPException(status_code=404, detail="未启用 LDAP")
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="请输入 LDAP 账号和密码")
+    check_throttle(request, "bind-ldap:" + username)
+    try:
+        lu = ldap_auth.authenticate(username, password)
+    except ldap_auth.LdapDenied:
+        note_failure(request, "bind-ldap:" + username)
+        raise HTTPException(status_code=401, detail="LDAP 账号或密码不正确")
+    except ldap_auth.LdapUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{ldap_auth.label()} 暂不可用（{exc}）",
+        )
+    clear_failures(request, "bind-ldap:" + username)
+    link_identity(row["id"], "ldap", lu.dn, lu.username)
+    if lu.is_admin and row["role"] != "admin":
+        _promote_admin(row["id"])
+    return bindings_payload(row["id"])
+
+
+@router.delete("/bindings/{provider}")
+def unbind_identity(request: Request, provider: str) -> Dict[str, Any]:
+    row = user_from_request(request)
+    if row is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    if provider not in PROVIDERS:
+        raise HTTPException(status_code=400, detail="provider 只能是 ldap 或 sso")
+    link = find_identity_for_user(row["id"], provider)
+    if link is None:
+        raise HTTPException(status_code=404, detail=f"当前账号没有绑定 {provider_label(provider)}")
+    # 只有一个外部登录入口且没有本地密码时，解绑会把账号锁死。
+    others = [item for item in list_identities(row["id"]) if item["provider"] != provider]
+    if not has_local_password(row) and not others:
+        raise HTTPException(
+            status_code=409,
+            detail="当前账号没有本地密码，解绑后无法登录；请先让管理员重置本地密码",
+        )
+    with connect() as conn:
+        conn.execute("DELETE FROM identity_links WHERE id=?", (link["id"],))
+        if (row["source"] if "source" in row.keys() else "local") == provider:
+            conn.execute(
+                "UPDATE users SET source='local', external_id=NULL WHERE id=?", (row["id"],)
+            )
+        conn.commit()
+    return bindings_payload(row["id"])
+
+
 def _origin(request: Request) -> str:
     """反代后的真实 origin：优先 X-Forwarded-*，没有再退回请求本身。"""
     proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip() or request.url.scheme
@@ -576,6 +804,30 @@ def _safe_next(value: Optional[str]) -> str:
     return text
 
 
+def _bind_sso_redirect(message: str = "", ok: bool = False) -> RedirectResponse:
+    query = "/?settings=account&bind=sso&" + ("ok=1" if ok else "error=" + quote(message))
+    return RedirectResponse(query, status_code=302)
+
+
+@router.get("/sso/bind/start")
+def sso_bind_start(request: Request) -> Response:
+    """已登录账号发起 SSO 绑定；回调会校验当前会话与发起人一致。"""
+    row = user_from_request(request)
+    if row is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    if not sso_auth.enabled():
+        raise HTTPException(status_code=404, detail="未启用 SSO")
+    try:
+        url = sso_auth.begin(
+            _origin(request),
+            "/?settings=account&bind=sso&ok=1",
+            bind_user_id=row["id"],
+        )
+    except (sso_auth.SsoUnavailable, sso_auth.SsoError) as exc:
+        return _bind_sso_redirect(str(exc))
+    return RedirectResponse(url, status_code=302)
+
+
 @router.get("/sso/start")
 def sso_start(request: Request, next: Optional[str] = None) -> Response:
     """跳去 IdP 授权页。没启用 SSO 就当 404，不给探测面。"""
@@ -592,13 +844,27 @@ def sso_start(request: Request, next: Optional[str] = None) -> Response:
 
 @router.get("/sso/callback")
 def sso_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None) -> Response:
-    """IdP 回调：校验 token → 建/取影子账号 → 发本地会话 cookie → 回原页面。"""
+    """IdP 回调：普通登录建/取账号；绑定模式把外部身份挂到当前账号。"""
     if not sso_auth.enabled():
         raise HTTPException(status_code=404, detail="未启用 SSO")
     try:
         user, stored = sso_auth.finish(code or "", state or "")
     except (sso_auth.SsoUnavailable, sso_auth.SsoError) as exc:
         return RedirectResponse("/login?sso_error=" + quote(str(exc)), status_code=302)
+
+    bind_user_id = stored.get("bind_user_id")
+    if bind_user_id is not None:
+        current = user_from_request(request)
+        if current is None or int(current["id"]) != int(bind_user_id):
+            return _bind_sso_redirect("绑定会话已失效，请重新登录后再绑定")
+        try:
+            link_identity(int(bind_user_id), "sso", user.sub, user.username)
+            if user.is_admin and current["role"] != "admin":
+                _promote_admin(int(bind_user_id))
+        except HTTPException as exc:
+            return _bind_sso_redirect(str(exc.detail))
+        return RedirectResponse(_safe_next(stored.get("next") or "/?settings=account&bind=sso&ok=1"), status_code=302)
+
     try:
         row = sso_shadow_user(user)
     except HTTPException as exc:
@@ -795,6 +1061,7 @@ def admin_delete_user(
         if row["role"] == "admin" and _other_active_admins(conn, user_id) == 0:
             raise HTTPException(status_code=400, detail="至少要保留一个启用的管理员")
         _drop_sessions_conn(conn, user_id)
+        conn.execute("DELETE FROM identity_links WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM users WHERE id=?", (user_id,))
         conn.commit()
     return {"deleted": user_id}
@@ -884,6 +1151,7 @@ def admin_batch_delete_users(
             deleted_users = []
             for row in found:
                 _drop_sessions_conn(conn, row["id"])
+                conn.execute("DELETE FROM identity_links WHERE user_id=?", (row["id"],))
                 conn.execute("DELETE FROM users WHERE id=?", (row["id"],))
                 deleted_users.append({"id": row["id"], "username": row["username"]})
             conn.commit()

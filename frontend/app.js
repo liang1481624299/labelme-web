@@ -80,6 +80,7 @@ function httpStatusText(status) {
 }
 
 let csrfToken = '';
+let accountBindings = null;
 
 async function req(method, path, body, isForm) {
   const opts = { method, headers: {}, credentials: 'same-origin' };
@@ -1102,7 +1103,7 @@ function readSettingsForm() {
   if (state.image) redraw();
 }
 
-function openSettings() {
+function openSettings(target) {
   const modal = $('settingsModal');
   if (!modal) return;
   syncSettingsForm();
@@ -1111,13 +1112,164 @@ function openSettings() {
   modal.hidden = false;
   const content = $('settingsContent');
   if (content) content.scrollTop = 0;
-  setSettingsNav('settingsAppearance');
+  setSettingsNav(target || 'settingsAppearance');
+  if ((target || '') === 'settingsAccount' || !accountBindings) loadAccountBindings();
 }
 
 function setSettingsNav(target) {
   document.querySelectorAll('.settings-nav-item').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.target === target);
   });
+}
+
+function showAccountBindMsg(text, isError = false) {
+  const box = $('accountBindMsg');
+  if (!box) return;
+  box.hidden = !text;
+  box.textContent = text || '';
+  box.classList.toggle('error', !!isError);
+}
+
+function renderAccountBindings() {
+  const data = accountBindings;
+  if (!data) return;
+  const name = $('accountUsername');
+  if (name) name.textContent = data.username || '—';
+  const source = $('accountSource');
+  if (source) {
+    source.textContent = data.source === 'ldap'
+      ? 'LDAP 影子账号'
+      : data.source === 'sso' ? 'SSO 影子账号' : '本地账号';
+  }
+
+  const ldap = data.available.ldap || {};
+  const sso = data.available.sso || {};
+  const ldapLink = data.bindings.ldap || {};
+  const ssoLink = data.bindings.sso || {};
+
+  const ldapTitle = $('ldapBindTitle');
+  if (ldapTitle) ldapTitle.textContent = ldap.label || 'LDAP / AD';
+  const ldapState = $('ldapBindState');
+  if (ldapState) {
+    ldapState.textContent = !ldap.enabled
+      ? '管理员未启用 LDAP'
+      : ldapLink.bound
+        ? `已绑定：${ldapLink.external_name || '已绑定'}`
+        : '未绑定';
+  }
+  const ldapBind = $('btnLdapBind');
+  if (ldapBind) {
+    ldapBind.hidden = !ldap.enabled || !!ldapLink.bound;
+    ldapBind.textContent = `绑定 ${ldap.label || 'LDAP'}…`;
+  }
+  const ldapUnbind = $('btnLdapUnbind');
+  if (ldapUnbind) ldapUnbind.hidden = !ldapLink.bound;
+  const ldapForm = $('ldapBindForm');
+  if (ldapForm) ldapForm.hidden = true;
+
+  const ssoTitle = $('ssoBindTitle');
+  if (ssoTitle) ssoTitle.textContent = sso.label || '统一登录 / SSO';
+  const ssoState = $('ssoBindState');
+  if (ssoState) {
+    ssoState.textContent = !sso.enabled
+      ? '管理员未启用 SSO'
+      : ssoLink.bound
+        ? `已绑定：${ssoLink.external_name || '已绑定'}`
+        : '未绑定';
+  }
+  const ssoBind = $('btnSsoBind');
+  if (ssoBind) {
+    ssoBind.hidden = !sso.enabled || !!ssoLink.bound;
+    ssoBind.textContent = `绑定 ${sso.label || 'SSO'}…`;
+  }
+  const ssoUnbind = $('btnSsoUnbind');
+  if (ssoUnbind) ssoUnbind.hidden = !ssoLink.bound;
+}
+
+async function loadAccountBindings() {
+  showAccountBindMsg('');
+  try {
+    accountBindings = await req('GET', '/api/auth/bindings');
+    renderAccountBindings();
+  } catch (e) {
+    showAccountBindMsg(`账号绑定信息加载失败：${e.message}`, true);
+  }
+}
+
+async function submitLdapBinding() {
+  const username = ($('bindLdapUser') && $('bindLdapUser').value.trim()) || '';
+  const password = ($('bindLdapPassword') && $('bindLdapPassword').value) || '';
+  if (!username || !password) {
+    showAccountBindMsg('请输入 LDAP 账号和密码', true);
+    return;
+  }
+  const submit = $('btnLdapSubmit');
+  if (submit) submit.disabled = true;
+  showAccountBindMsg('正在验证 LDAP 身份…');
+  try {
+    accountBindings = await req('POST', '/api/auth/bind/ldap', { username, password });
+    if ($('bindLdapPassword')) $('bindLdapPassword').value = '';
+    if ($('ldapBindForm')) $('ldapBindForm').hidden = true;
+    renderAccountBindings();
+    showAccountBindMsg(`已绑定 LDAP：${username}`);
+  } catch (e) {
+    showAccountBindMsg(`绑定失败：${e.message}`, true);
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+}
+
+async function unbindIdentity(provider, label) {
+  if (!window.confirm(`确定解绑 ${label} 吗？解绑后该登录方式将不能再进入这个账号。`)) return;
+  try {
+    accountBindings = await req('DELETE', `/api/auth/bindings/${provider}`);
+    renderAccountBindings();
+    showAccountBindMsg(`已解绑 ${label}`);
+  } catch (e) {
+    showAccountBindMsg(`解绑失败：${e.message}`, true);
+  }
+}
+
+function bindAccountSettingsUi() {
+  if (!$('settingsAccount')) return;
+  $('btnLdapBind').addEventListener('click', () => {
+    if (!$('ldapBindForm')) return;
+    $('ldapBindForm').hidden = false;
+    showAccountBindMsg('');
+    if ($('bindLdapUser')) $('bindLdapUser').focus();
+  });
+  $('btnLdapCancel').addEventListener('click', () => {
+    if ($('ldapBindForm')) $('ldapBindForm').hidden = true;
+    if ($('bindLdapPassword')) $('bindLdapPassword').value = '';
+  });
+  $('btnLdapSubmit').addEventListener('click', submitLdapBinding);
+  $('btnLdapUnbind').addEventListener('click', () => unbindIdentity('ldap', 'LDAP'));
+  $('btnSsoBind').addEventListener('click', () => {
+    location.href = '/api/auth/sso/bind/start';
+  });
+  $('btnSsoUnbind').addEventListener('click', () => unbindIdentity('sso', 'SSO'));
+  $('bindLdapPassword').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') submitLdapBinding();
+  });
+}
+
+function handleAccountQuery() {
+  const params = new URLSearchParams(location.search);
+  const wantAccount = params.get('settings') === 'account';
+  const bind = params.get('bind');
+  if (bind === 'sso') {
+    if (params.get('ok') === '1') {
+      toast('SSO 已绑定到这个账号');
+    } else if (params.get('error')) {
+      toast(`SSO 绑定失败：${params.get('error')}`, true);
+    }
+  }
+  if (wantAccount) openSettings('settingsAccount');
+  if (wantAccount || bind) {
+    ['settings', 'bind', 'ok', 'error'].forEach((key) => params.delete(key));
+    const query = params.toString();
+    history.replaceState(null, '', location.pathname + (query ? '?' + query : '') + location.hash);
+  }
 }
 
 function bindSettingsUi() {
@@ -1142,6 +1294,7 @@ function bindSettingsUi() {
   document.querySelectorAll('.settings-nav-item').forEach((btn) => {
     btn.addEventListener('click', () => {
       setSettingsNav(btn.dataset.target);
+      if (btn.dataset.target === 'settingsAccount') loadAccountBindings();
       const section = $(btn.dataset.target);
       if (section) section.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
@@ -3863,6 +4016,7 @@ const MENUS = [
       { id: 'deleteAnnotation', label: '删除标注文件(&D)', sc: 'Ctrl+Del', disabled: () => !currentImageAnnotated() },
       { sep: true },
       { id: 'settings', label: '设置…', sc: 'Ctrl+Shift+,' },
+      { id: 'accountSettings', label: '账号与安全…' },
       { id: 'aiModels', label: 'AI 模型…' },
     ],
   },
@@ -4555,6 +4709,9 @@ function runAction(id) {
     case 'settings':
       openSettings();
       break;
+    case 'accountSettings':
+      openSettings('settingsAccount');
+      break;
     default:
       break;
   }
@@ -5156,6 +5313,8 @@ async function boot() {
   buildToolstrip();
   bindUi();
   bindSettingsUi();
+  bindAccountSettingsUi();
+  setTimeout(handleAccountQuery, 120);
   startSessionHeartbeat();
   setTool('select');
   showEmpty(true);

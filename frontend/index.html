@@ -267,6 +267,7 @@
         <button class="settings-nav-item" data-target="settingsLabelSource"><span>◇</span>标签来源</button>
         <button class="settings-nav-item" data-target="settingsLabelBehavior"><span>☰</span>标签行为</button>
         <button class="settings-nav-item" data-target="settingsAi"><span>✦</span>AI 辅助</button>
+        <button class="settings-nav-item" data-target="settingsAccount"><span>◈</span>账号与安全</button>
       </aside>
 
       <div class="settings-content" id="settingsContent">
@@ -392,6 +393,45 @@
             <input id="setAiEnabled" class="settings-checkbox" type="checkbox" />
           </div>
           <p class="settings-note">SAM / OpenAI 推理服务由管理员在后台配置；Web 版当前只保存这个开关，标注页的 AI 按钮仍置灰。</p>
+        </section>
+
+        <section class="settings-section" id="settingsAccount">
+          <h3>账号与安全</h3>
+          <p class="settings-note">当前账号：<b id="accountUsername">—</b> <span id="accountSource" class="account-source"></span></p>
+
+          <div class="settings-row settings-row-tall">
+            <div>
+              <span id="ldapBindTitle">LDAP / AD</span>
+              <p id="ldapBindState">检查中…</p>
+            </div>
+            <div class="settings-actions">
+              <button class="btn" id="btnLdapBind" type="button" hidden>绑定 LDAP…</button>
+              <button class="btn" id="btnLdapUnbind" type="button" hidden>解绑</button>
+            </div>
+          </div>
+          <div class="bind-form" id="ldapBindForm" hidden>
+            <p class="settings-note">输入要绑定的 LDAP / AD 账号和密码。只用于验证身份，不会保存密码。</p>
+            <div class="bind-fields">
+              <input class="settings-input" id="bindLdapUser" type="text" autocomplete="username" placeholder="LDAP 账号" />
+              <input class="settings-input" id="bindLdapPassword" type="password" autocomplete="current-password" placeholder="LDAP 密码" />
+              <button class="btn btn-primary" id="btnLdapSubmit" type="button">验证并绑定</button>
+              <button class="btn" id="btnLdapCancel" type="button">取消</button>
+            </div>
+          </div>
+
+          <div class="settings-row settings-row-tall">
+            <div>
+              <span id="ssoBindTitle">统一登录 / SSO</span>
+              <p id="ssoBindState">检查中…</p>
+            </div>
+            <div class="settings-actions">
+              <button class="btn" id="btnSsoBind" type="button" hidden>绑定 SSO…</button>
+              <button class="btn" id="btnSsoUnbind" type="button" hidden>解绑</button>
+            </div>
+          </div>
+
+          <p class="settings-note">绑定后，本地密码、LDAP 和 SSO 都会登录到同一个 Labelme 账号；解绑只移除登录方式，不会删除账号、工程或标注。</p>
+          <div class="settings-note account-bind-msg" id="accountBindMsg" hidden></div>
         </section>
       </div>
     </div>

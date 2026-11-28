@@ -133,14 +133,23 @@ def _prune_states() -> None:
             _STATES.pop(key, None)
 
 
-def begin(origin: str, next_path: str) -> str:
-    """生成 state 并返回要跳转的 authorization URL。"""
+def begin(origin: str, next_path: str, bind_user_id: Optional[int] = None) -> str:
+    """生成 state 并返回要跳转的 authorization URL。
+
+    bind_user_id 有值时表示“把 SSO 身份绑定到已登录账号”，回调不新建/切换会话。
+    """
     doc = discovery()
     _prune_states()
     state = secrets.token_urlsafe(24)
     nonce = secrets.token_urlsafe(16)
     redirect = redirect_uri(origin)
-    _STATES[state] = {"nonce": nonce, "next": next_path or "/", "at": time.time(), "redirect": redirect}
+    _STATES[state] = {
+        "nonce": nonce,
+        "next": next_path or "/",
+        "at": time.time(),
+        "redirect": redirect,
+        "bind_user_id": bind_user_id,
+    }
     params = {
         "response_type": "code",
         "client_id": _cfg(CLIENT_ID_KEY, CLIENT_ID_ENV),

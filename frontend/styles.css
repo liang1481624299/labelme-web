@@ -587,6 +587,25 @@ canvas {
 .btn:hover { background: var(--hover); }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover { background: var(--accent-hover); }
+.btn[hidden], .bind-form[hidden] { display: none !important; }
+
+.settings-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.settings-actions .btn { cursor: pointer; }
+.account-source {
+  margin-left: 6px; padding: 1px 6px;
+  border: 1px solid var(--border); border-radius: 9px;
+  color: var(--text-dim); font-size: 11px;
+}
+.bind-form {
+  margin: 4px 0 8px; padding: 8px 10px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+}
+.bind-form .settings-note { margin: 0 0 8px; }
+.bind-fields { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bind-fields .settings-input { width: 180px; }
+.bind-fields .btn { cursor: pointer; }
+.account-bind-msg { color: var(--text); }
+.account-bind-msg.error { color: #e38a8a; }
 
 #labelInput {
   width: 100%; height: 30px; padding: 0 8px;

@@ -285,8 +285,12 @@ LABELME_WEB_LDAP_ADMIN_GROUP=CN=labelme-admins,OU=groups,DC=lab,DC=local
 
 行为约定（这几条是刻意设计，不是实现细节）：
 
-- 认证成功后在 `users` 里落一条影子账号（`source='ldap'`，`password_hash='!ldap'` 占位），
-  之后工程、`/admin`、批量建号全部照旧；账号名必须符合本站命名规则（它同时是 `data/` 的目录名）
+- 认证成功后，若该 LDAP 身份已经绑定到某个 Labelme 账号，直接登录那个账号；
+  没有绑定时，只有「LDAP 账号名在本地不存在」才自动落一条影子账号
+  （`source='ldap'`，`password_hash='!ldap'` 占位）并写入绑定关系；
+- **同名本地账号不会被 LDAP 自动接管**：本地已有同名账号时，LDAP 登录会拒绝，
+  必须先用本地密码登录，再到「设置 → 账号与安全」显式绑定。一个账号每个 provider
+  只能绑一个身份，同一个外部身份也只能绑一个账号；
 - 组命中管理员时**只升不降**，避免 LDAP 组配错把唯一的管理员降权锁死
 - LDAP 连不上 → HTTP 503「LDAP 暂不可用，请先用本地账号登录」，且**不累加登录失败次数**，
   免得 LDAP 抖动把本地账号一起锁了
@@ -297,6 +301,7 @@ LABELME_WEB_LDAP_ADMIN_GROUP=CN=labelme-admins,OU=groups,DC=lab,DC=local
 
 ```bash
 python dev/ldap_mock_check.py     # 13 项：模板/搜索绑定、密码错、组映射、影子账号、幂等
+python dev/bind_mock_check.py      # 16 项：显式绑定、同名接管拦截、冲突、解绑、SSO 回调绑定/会话校验
 ```
 
 ## SSO 接入（OIDC，可选）
@@ -339,11 +344,15 @@ python dev/ldap_mock_check.py     # 13 项：模板/搜索绑定、密码错、�
    （带 `state` / `nonce`，内存里存 10 分钟）；
 2. IdP 回调 `GET /api/auth/sso/callback` → 用 code 换 token → 用 JWKS 校验
    `id_token`（`iss` / `aud` / `exp` / `nonce`）→ 取 claims 里的账号名；
-3. 落一条影子账号（`source='sso'`，`password_hash='!sso'` 占位），之后权限、工程、
-   `/admin` 全部照旧；同名本地账号不覆盖密码，只按组升权限；
-4. 任何失败都 302 回 `/login?sso_error=...`，`SsoUnavailable` 与 `SsoError` 分开给原因
-   （连不上 IdP / 校验不过），不会把用户卡在空白页；
-5. `/api/auth/methods` 只多一个 `sso: {enabled, label}`，不泄露 issuer 与 client id。
+3. 已有绑定 → 登录被绑定的本地账号；没有绑定且本地无同名账号 → 自动落一条影子账号
+   （`source='sso'`，`password_hash='!sso'` 占位）并写入绑定关系；**本地已有同名账号时拒绝自动接管**，
+   需要先本地密码登录后在「账号与安全」里绑定；
+4. 绑定模式走 `GET /api/auth/sso/bind/start`（要求已登录），`state` 里带发起人 id；
+   回调会核对当前会话与发起人一致，成功后不再签发新 cookie，只把 `sub` 挂到当前账号；
+5. 任何失败都 302 回 `/login?sso_error=...`，`SsoUnavailable` 与 `SsoError` 分开给原因
+   （连不上 IdP / 校验不过），不会把用户卡在空白页；绑定阶段的失败回
+   `/?settings=account&bind=sso&error=...`；
+6. `/api/auth/methods` 只多一个 `sso: {enabled, label}`，不泄露 issuer 与 client id。
 
 自检（本地起一个假 IdP，跑完整链路，不需要真 IdP）：
 
@@ -351,6 +360,38 @@ python dev/ldap_mock_check.py     # 13 项：模板/搜索绑定、密码错、�
 python dev/sso_mock_check.py      # 25 项：discovery 缓存、state 一次性、验签/过期/换 key、
                                   #       组映射、basic/post、影子账号、methods
 ```
+
+## 账号绑定（LDAP / SSO → 同一个 Labelme 账号）
+
+同一账号可以同时绑定 LDAP 和 SSO，绑定后本地密码、LDAP、SSO 三种方式都登录到同一个
+`users` 行，工程、角色和标注数据不分叉。关系单独存 `identity_links`：
+
+| 字段 | 说明 |
+| --- | --- |
+| `user_id` | 本地 Labelme 账号 |
+| `provider` | `ldap` / `sso` |
+| `external_id` | LDAP 用完整 DN，SSO 用 `sub`；不存密码，不存 token |
+| `external_name` | 只用于界面显示「已绑定：xxx」 |
+
+约束是 `UNIQUE(provider, external_id)` 和 `UNIQUE(user_id, provider)`：一个外部身份不能
+绑两个账号，一个账号也不能绑两个同类型身份。
+
+操作入口：
+
+- 标注页「文件 → 账号与安全…」，或设置弹窗左侧「账号与安全」；
+- LDAP：输入 LDAP 账号/密码 → 「验证并绑定」，后端真实验证一次 LDAP 密码，密码不落库；
+- SSO：点「绑定 SSO…」跳 IdP，回跳 `/?settings=account&bind=sso&ok=1`；
+- 解绑：`DELETE /api/auth/bindings/{provider}`。若账号没有本地密码且这是最后一个外部绑定，
+  会拒绝解绑，避免把影子账号锁死。
+
+安全约定：
+
+- **不按同名自动接管**：外部身份与本地账号同名但未绑定，一律拒绝登录并提示先本地登录后绑定；
+- 绑定 SSO 时 `state` 带 `bind_user_id`，回调必须当前会话与发起人一致，防止把别人的
+  SSO 身份挂到自己的账号上；
+- 管理员单个/批量删号会一并清理 `identity_links`；
+- 老版本已经存在的 `source='ldap'/'sso'` 且带 `external_id` 的影子账号，`init_db()` 会补一条
+  绑定记录，升级后仍能登录。
 
 管理后台冒烟（隔离库 + 端口 9632，覆盖配置保存/测试、文件浏览器、上传流水）：
 
@@ -615,6 +656,10 @@ Web 版结果更贴近原始轮廓，但点数更多。需要完全一致可后�
 | PUT | `/api/settings` | 保存当前账号设置，body `{"settings":{...}}`；只收已知键，类型/枚举/颜色会校验 |
 | GET | `/api/ai/models` | 当前账号可选的 AI 模型清单（只含 id/名称/能力/许可证，不含接口密钥） |
 | GET | `/api/auth/methods` | 登录方式（`{password:true, ldap:{enabled,label}, sso:{enabled,label}, site_name, upload_max_mb}`），不泄露地址与 client |
+| GET | `/api/auth/bindings` | 当前账号的 LDAP/SSO 绑定状态与可用的 provider（不泄露 DN/sub） |
+| POST | `/api/auth/bind/ldap` | 已登录账号验证 LDAP 密码后绑定，body `{username,password}` |
+| DELETE | `/api/auth/bindings/{provider}` | 解绑 `ldap` 或 `sso` |
+| GET | `/api/auth/sso/bind/start` | 已登录账号发起 SSO 绑定，302 到 IdP；state 记录发起人 |
 | GET | `/api/auth/sso/start` | 302 到 IdP 授权页；未启用 SSO 时 404 |
 | GET | `/api/auth/sso/callback` | IdP 回调：换 token、验 `id_token`、发本地会话、回 `next`；失败 302 到登录页带 `sso_error` |
 | GET | `/api/admin/auth-config` | LDAP / SSO 当前生效配置（密钥遮罩，带每个值的来源） |
