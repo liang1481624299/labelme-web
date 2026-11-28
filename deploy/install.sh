@@ -97,13 +97,13 @@ cat <<EOF
 部署完成。
 
   安装目录   ${APP_DIR}
-  会话数据   ${APP_DIR}/data/<YYYYMMDDHHMMSS>/
+  工程数据   ${APP_DIR}/data/<用户名>/<工程名>/
   账号库     ${APP_DIR}/var/labelme-web.db（bcrypt 哈希，无明文）
-  前端端口   9630（NGINX）
+  前端端口   9630（NGINX，默认只监听 127.0.0.1，由外层反代）
   后端端口   9631（systemd，仅本机 127.0.0.1）
   服务单元   systemctl status ${SERVICE_NAME}
   日志       journalctl -u ${SERVICE_NAME} -f
-  访问       http://<服务器IP>:9630/  （首次打开会跳登录页，第一个注册的账号即管理员）
-  管理面板   http://<服务器IP>:9630/admin  （只能手敲链接，标注页没有入口）
+  本机访问   http://127.0.0.1:9630/  （首次打开会跳登录页，第一个注册的账号即管理员）
+  管理面板   http://127.0.0.1:9630/admin  （只能手敲链接，标注页没有入口）
 
 EOF
