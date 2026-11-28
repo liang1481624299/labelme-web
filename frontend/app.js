@@ -227,6 +227,10 @@ const view = {
   ty: 0,
 };
 
+/* 画布右键：记录按下时命中的形状，避免“空处按下、形状上松开”误弹形状菜单 */
+let rightClickInfo = null;
+let canvasContextMenu = null;
+
 const colorCache = new Map();
 function colorForLabel(label) {
   if (state.shapeColorMode === 'uniform') return hexToRgb(state.uniformColor);
@@ -1762,6 +1766,23 @@ function touchCancel(ev) {
 
 canvas.addEventListener('pointerdown', (ev) => {
   if (!state.image) return;
+  if (ev.button === 2) {
+    // 右键：先记下按下时命中的形状，真正的菜单在 contextmenu 里弹。
+    // 不在这里 preventDefault，避免某些浏览器连带吞掉 contextmenu。
+    const pt = clientToImage(ev.clientX, ev.clientY);
+    const hit = hitTestShape(pt);
+    state.hover = [pt.x, pt.y];
+    rightClickInfo = {
+      shape: hit,
+      point: [pt.x, pt.y],
+      clientX: ev.clientX,
+      clientY: ev.clientY,
+      ctrl: ev.ctrlKey || ev.metaKey,
+      shift: ev.shiftKey,
+      at: Date.now(),
+    };
+    return;
+  }
   try { canvas.setPointerCapture(ev.pointerId); } catch (e) { /* 合成事件无捕获 */ }
   if (isTouchPointer(ev)) {
     touchDown(ev);
@@ -1953,11 +1974,39 @@ canvas.addEventListener('dblclick', (ev) => {
 
 canvas.addEventListener('contextmenu', (ev) => {
   ev.preventDefault();
-  // HIG：长按用于上下文菜单，不作为结束多边形的隐藏手势
-  if (isTouchPointer(ev) || (touchUi && ev.pointerType !== 'mouse') || (touchUi && touchState.pointers.size)) return;
-  if (state.drawing && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
-    finishDrawing();
+  ev.stopPropagation();
+  const info = rightClickInfo && Date.now() - rightClickInfo.at < 1500 ? rightClickInfo : null;
+
+  // 正在绘制时右键不弹形状菜单；多边形/折线等仍作为“结束绘制”的快捷手势。
+  if (state.drawing) {
+    if (!isTouchPointer(ev) && ['polygon', 'linestrip', 'oriented_rectangle', 'circle3'].includes(state.drawing.type)) {
+      finishDrawing();
+    }
+    rightClickInfo = null;
+    return;
   }
+
+  // 触屏长按不接右键菜单；桌面鼠标右键即使设备带触摸屏也要正常弹。
+  if (!info && (isTouchPointer(ev) || touchUi)) return;
+  if (!state.image) return;
+
+  const pt = info ? { x: info.point[0], y: info.point[1] } : clientToImage(ev.clientX, ev.clientY);
+  state.hover = [pt.x, pt.y];
+
+  let hit = info ? info.shape : hitTestShape(pt);
+  if (hit >= 0 && !state.shapes[hit]) hit = -1;
+
+  if (hit >= 0 && !state.hideShapes) {
+    showShapeContextMenu(hit, ev.clientX, ev.clientY, info);
+  } else {
+    showCanvasContextMenu(ev.clientX, ev.clientY);
+  }
+  rightClickInfo = null;
+});
+
+// 画布周边（图像留白、空状态等）也吞掉浏览器原生右键菜单。
+wrap.addEventListener('contextmenu', (ev) => {
+  if (!ev.defaultPrevented) ev.preventDefault();
 });
 
 canvas.addEventListener('wheel', (ev) => {
@@ -4279,6 +4328,135 @@ function buildMenubar() {
 function hideMenus() {
   document.querySelectorAll('.menu-list').forEach((el) => el.classList.remove('show'));
   document.querySelectorAll('.menu-btn').forEach((el) => el.classList.remove('open'));
+}
+
+/* ------------------------------------------------------ canvas context menu */
+function ensureCanvasContextMenu() {
+  if (canvasContextMenu) return canvasContextMenu;
+  const menu = document.createElement('div');
+  menu.className = 'menu-list context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.tabIndex = -1;
+  menu.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      hideMenus();
+    } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      focusMenuRow(menu, ev.key === 'ArrowDown' ? 1 : -1);
+    } else if (ev.key === 'Enter' || ev.key === ' ') {
+      const row = document.activeElement;
+      if (row && row.classList && row.classList.contains('menu-item')) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        row.click();
+      }
+    }
+  });
+  menu.addEventListener('contextmenu', (ev) => ev.preventDefault());
+  document.body.appendChild(menu);
+  canvasContextMenu = menu;
+  return menu;
+}
+
+function openCanvasContextMenu(items, clientX, clientY) {
+  const menu = ensureCanvasContextMenu();
+  menu.innerHTML = '';
+  buildMenuItems(menu, items);
+  refreshMenuState(menu);
+  // 先放到屏幕外量尺寸，再按鼠标位置贴边修正，避免菜单跑出窗口。
+  menu.style.left = '-9999px';
+  menu.style.top = '0px';
+  menu.classList.add('show');
+  const w = menu.offsetWidth;
+  const h = menu.offsetHeight;
+  const margin = 8;
+  const vw = document.documentElement.clientWidth || window.innerWidth;
+  const vh = document.documentElement.clientHeight || window.innerHeight;
+  const x = Math.max(margin, Math.min(clientX, vw - w - margin));
+  const y = Math.max(margin, Math.min(clientY, vh - h - margin));
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.toggle('flip-sub', x + w + 170 > vw);
+  menu.classList.toggle('sub-up', y > 240);
+  menu.focus({ preventScroll: true });
+  return menu;
+}
+
+function selectShapeForContextMenu(hit, info) {
+  if (hit < 0 || !state.shapes[hit]) return;
+  const set = state.selectedSet.slice();
+  if (!set.includes(hit)) {
+    if (info && (info.ctrl || info.shift) && set.length) set.push(hit);
+    else set.splice(0, set.length, hit);
+  }
+  state.selectedSet = set;
+  state.selected = hit;
+  const shape = state.shapes[hit];
+  state.selectedVertex = info && shape ? hitTestVertex(shape, info.point) : -1;
+  refreshDocks();
+  updateStatus();
+  redraw();
+}
+
+function shapeContextMenuItems() {
+  const shapes = selectedShapeRecords();
+  const allLocked = shapes.length > 0 && shapes.every((s) => s.locked);
+  return [
+    { id: 'editShapeLabel', label: '编辑标签(&E)…', sc: 'Ctrl+E', disabled: () => !hasUnlockedSelection() },
+    { id: 'duplicateShape', label: '复制形状', sc: 'Ctrl+D', disabled: () => !hasSelection() },
+    { id: 'copyShape', label: '复制到剪贴板', sc: 'Ctrl+C', disabled: () => !hasSelection() },
+    { id: 'deleteShape', label: '删除形状', sc: 'Del', disabled: () => !selectedShapeRecords().some((s) => !s.locked) },
+    { id: 'mergeShapes', label: '合并形状', disabled: () => mergeBlocker() !== null },
+    {
+      id: 'convert',
+      label: '转换为',
+      children: [
+        { id: 'convertPolygon', label: '多边形', checkable: true, checked: () => convertBlocker('polygon') === 'already_target', disabled: () => convertBlocker('polygon') !== null },
+        { id: 'convertRectangle', label: '矩形', checkable: true, checked: () => convertBlocker('rectangle') === 'already_target', disabled: () => convertBlocker('rectangle') !== null },
+        { id: 'convertOrientedRectangle', label: '有向矩形', checkable: true, checked: () => convertBlocker('oriented_rectangle') === 'already_target', disabled: () => convertBlocker('oriented_rectangle') !== null },
+        { id: 'convertCircle', label: '圆形', checkable: true, checked: () => convertBlocker('circle') === 'already_target', disabled: () => convertBlocker('circle') !== null },
+        { id: 'convertLine', label: '直线', checkable: true, checked: () => convertBlocker('line') === 'already_target', disabled: () => convertBlocker('line') !== null },
+        { id: 'convertPoint', label: '点', checkable: true, checked: () => convertBlocker('point') === 'already_target', disabled: () => convertBlocker('point') !== null },
+        { id: 'convertLinestrip', label: '折线', checkable: true, checked: () => convertBlocker('linestrip') === 'already_target', disabled: () => convertBlocker('linestrip') !== null },
+        { id: 'convertMask', label: '掩码', checkable: true, checked: () => convertBlocker('mask') === 'already_target', disabled: () => convertBlocker('mask') !== null },
+      ],
+    },
+    { id: 'lockShape', label: allLocked ? '解锁形状' : '锁定形状', sc: 'Ctrl+Shift+L', disabled: () => !hasSelection() },
+    { sep: true },
+    { id: 'addPoint', label: '在边上插入点', disabled: () => !selectedShapeRecords().some((s) => ['polygon', 'linestrip'].includes(s.shape_type) && !s.locked) },
+    { id: 'deletePoint', label: '删除选中的点', sc: 'Ctrl+H', disabled: () => !(state.selectedVertex >= 0 && selectedShapeRecords().some((s) => ['polygon', 'linestrip'].includes(s.shape_type) && !s.locked)) },
+  ];
+}
+
+function canvasContextMenuItems() {
+  return [
+    { id: 'toolPolygon', label: '多边形', sc: 'Ctrl+N', checkable: true, checked: () => state.tool === 'polygon' },
+    { id: 'toolRectangle', label: '矩形', sc: 'Ctrl+R', checkable: true, checked: () => state.tool === 'rectangle' },
+    { id: 'toolOrientedRectangle', label: '有向矩形', checkable: true, checked: () => state.tool === 'oriented_rectangle' },
+    { id: 'toolCircle', label: '圆形', checkable: true, checked: () => state.tool === 'circle' },
+    { id: 'toolCircle3', label: '三点画圆', checkable: true, checked: () => state.tool === 'circle3' },
+    { id: 'toolPoint', label: '点', checkable: true, checked: () => state.tool === 'point' },
+    { id: 'toolLine', label: '直线', checkable: true, checked: () => state.tool === 'line' },
+    { id: 'toolLinestrip', label: '折线', checkable: true, checked: () => state.tool === 'linestrip' },
+    { id: 'editShape', label: '编辑形状', sc: 'Ctrl+J', checkable: true, checked: () => state.editShape },
+    { sep: true },
+    { id: 'undo', label: '撤销', sc: 'Ctrl+Z', disabled: () => state.undo.length === 0 },
+    { id: 'undoLastPoint', label: '撤销上一个点', sc: 'Ctrl+Z', disabled: () => !state.drawing },
+    { sep: true },
+    { id: 'pasteShape', label: '从剪贴板粘贴', sc: 'Ctrl+V', disabled: () => !state.clipboard },
+  ];
+}
+
+function showShapeContextMenu(hit, clientX, clientY, info) {
+  selectShapeForContextMenu(hit, info);
+  openCanvasContextMenu(shapeContextMenuItems(), clientX, clientY);
+}
+
+function showCanvasContextMenu(clientX, clientY) {
+  openCanvasContextMenu(canvasContextMenuItems(), clientX, clientY);
 }
 
 function setDockVisible(id, visible) {

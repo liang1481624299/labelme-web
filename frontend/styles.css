@@ -148,6 +148,23 @@ html, body {
 .menu-item.has-sub:focus-within .menu-sub { display: block; }
 .menu-sep { height: 1px; background: var(--border); margin: 4px 0; }
 
+/* 画布右键菜单：固定在鼠标位置，独立于菜单栏下拉 */
+.menu-list.context-menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 55;
+  min-width: 214px;
+}
+.menu-list.context-menu.flip-sub .menu-sub {
+  left: auto;
+  right: 100%;
+}
+.menu-list.context-menu.sub-up .menu-sub {
+  top: auto;
+  bottom: -5px;
+}
+
 /* ------------------------------------------------------------- toolbar */
 .toolbar {
   display: flex;
