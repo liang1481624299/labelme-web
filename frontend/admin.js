@@ -551,29 +551,61 @@ const PAGES = ['overview', 'accounts', 'batch', 'ldap', 'sso', 'projects', 'file
 const loadedViews = new Set();
 let navReady = false;
 
-/* 窄屏 LuCI 式抽屉：汉堡按钮、遮罩、关闭按钮 */
+/* 窄屏悬浮卡片抽屉：汉堡按钮、遮罩、关闭按钮 */
 const adminMenuBtn = $('btnAdminMenu');
 const adminMenuClose = $('btnAdminMenuClose');
 const adminMenuBackdrop = $('adminMenuBackdrop');
 const adminMain = document.querySelector('.admin-main');
 const adminMobile = window.matchMedia('(max-width: 980px)');
+let adminMenuScrollY = 0;
+let adminMenuLocked = false;
+let adminMenuUnlockTimer = 0;
+const ADMIN_MENU_FALLBACK_MS = 380;
+
+function lockAdminScroll() {
+  if (adminMenuLocked) return;
+  adminMenuLocked = true;
+  adminMenuScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+  document.documentElement.classList.add('admin-menu-locked');
+  document.body.classList.add('admin-menu-locked');
+  /* iOS Safari 的 body overflow:hidden 不一定生效，固定成 body 才能彻底断开页面滚动 */
+  document.body.style.top = `-${adminMenuScrollY}px`;
+}
+
+function unlockAdminScroll() {
+  if (!adminMenuLocked) return;
+  adminMenuLocked = false;
+  document.documentElement.classList.remove('admin-menu-locked');
+  document.body.classList.remove('admin-menu-locked');
+  document.body.style.top = '';
+  if (adminMenuScrollY) window.scrollTo(0, adminMenuScrollY);
+}
 
 function openAdminMenu() {
   if (!adminMobile.matches) return;
+  if (document.body.classList.contains('admin-menu-open')) return;
+  window.clearTimeout(adminMenuUnlockTimer);
+  lockAdminScroll();
   document.body.classList.add('admin-menu-open');
   adminMenuBtn.setAttribute('aria-expanded', 'true');
-  adminMenuBackdrop.hidden = false;
   if (adminMain) adminMain.inert = true;
   adminMenuClose.focus();
 }
 
 function closeAdminMenu(restoreFocus) {
-  const wasOpen = document.body.classList.contains('admin-menu-open');
+  if (!document.body.classList.contains('admin-menu-open')) return;
   document.body.classList.remove('admin-menu-open');
   adminMenuBtn.setAttribute('aria-expanded', 'false');
-  adminMenuBackdrop.hidden = true;
-  if (adminMain) adminMain.inert = false;
-  if (wasOpen && restoreFocus) adminMenuBtn.focus();
+  window.clearTimeout(adminMenuUnlockTimer);
+  /* 等抽屉滑出、遮罩淡出之后再解除滚动锁，避免页面提前跳动 */
+  const delay = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ? 0
+    : ADMIN_MENU_FALLBACK_MS;
+  adminMenuUnlockTimer = window.setTimeout(() => {
+    unlockAdminScroll();
+    if (adminMain) adminMain.inert = false;
+    if (restoreFocus) adminMenuBtn.focus();
+  }, delay);
 }
 
 adminMenuBtn.addEventListener('click', openAdminMenu);

@@ -36,34 +36,67 @@
 
     <main class="auth-panel">
       <div class="auth-card">
-        <div class="auth-brand">
-          <span class="dot"></span>
+        <div class="auth-brand" aria-label="当前站点">
+          <span class="dot" aria-hidden="true"></span>
           <span>Labelme</span>
           <span class="ver">7.11.0</span>
         </div>
 
-        <div class="auth-tabs">
-          <button class="auth-tab active" data-tab="login" type="button">登录</button>
-          <button class="auth-tab" data-tab="register" type="button">注册</button>
+        <div class="auth-head">
+          <span class="auth-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+              <path d="M10 17l5-5-5-5" />
+              <path d="M15 12H3" />
+            </svg>
+          </span>
+          <h2 class="auth-title" id="authTitle">用户登录</h2>
+          <p class="auth-sub" id="authSub">欢迎回来，请登录以继续使用</p>
+        </div>
+
+        <div class="auth-tabs" aria-label="登录或注册">
+          <button class="auth-tab active" data-tab="login" type="button" aria-pressed="true">登录</button>
+          <button class="auth-tab" data-tab="register" type="button" aria-pressed="false">注册</button>
         </div>
 
         <form id="authForm" autocomplete="on" novalidate>
-          <label class="field">
-            <span>账号</span>
+          <div class="field">
+            <label class="field-label" for="username">账号</label>
             <input id="username" name="username" type="text" autocomplete="username"
                    placeholder="2–32 位，中英文 / 数字 / _ - ." required />
-          </label>
-          <label class="field">
-            <span>密码</span>
-            <input id="password" name="password" type="password" autocomplete="current-password"
-                   placeholder="至少 8 位" required />
-          </label>
+          </div>
+          <div class="field">
+            <label class="field-label" for="password">密码</label>
+            <div class="input-wrap">
+              <input id="password" name="password" type="password" autocomplete="current-password"
+                     class="has-affix" placeholder="至少 8 位" required />
+              <button class="field-eye" id="togglePassword" type="button"
+                      aria-label="显示密码" aria-controls="password" aria-pressed="false">
+                <svg class="eye-on" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                <svg class="eye-off" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                  <path d="M3 3l18 18" />
+                  <path d="M10.6 5.2A11 11 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 3.9" />
+                  <path d="M6.5 6.6C3.7 8.3 2 12 2 12s3.5 7 10 7a10.8 10.8 0 0 0 4.3-.9" />
+                  <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+                </svg>
+              </button>
+            </div>
+          </div>
           <p class="auth-hint" id="registerHint" hidden>
             第一次注册的账号会自动成为管理员；之后注册的都是普通标注员（需管理员启用后可用）。
           </p>
           <p class="auth-hint" id="ldapHint" hidden></p>
-          <div class="auth-error" id="authError" hidden></div>
-          <button class="auth-submit" id="authSubmit" type="submit">登录</button>
+          <div class="auth-error" id="authError" role="alert" hidden></div>
+          <button class="auth-submit" id="authSubmit" type="submit">
+            <svg class="submit-ico" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M22 2 11 13" />
+              <path d="M22 2 15 22l-4-9-9-4 20-7z" />
+            </svg>
+            <span id="authSubmitLabel">登录</span>
+          </button>
         </form>
 
         <div class="auth-sso" id="ssoBox" hidden>

@@ -51,7 +51,9 @@ let ssoEnabled = false;
 function setMode(value) {
   mode = value;
   document.querySelectorAll('.auth-tab').forEach((tab) => {
-    tab.classList.toggle('active', tab.dataset.tab === value);
+    const active = tab.dataset.tab === value;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-pressed', active ? 'true' : 'false');
   });
   $('registerHint').hidden = value !== 'register';
   if (value === 'register') $('ldapHint').hidden = true;
@@ -60,7 +62,11 @@ function setMode(value) {
     $('ldapHint').textContent = ldapHintText;
     $('ldapHint').hidden = false;
   }
-  $('authSubmit').textContent = value === 'register' ? '注册并登录' : '登录';
+  $('authTitle').textContent = value === 'register' ? '创建账号' : '用户登录';
+  $('authSub').textContent = value === 'register'
+    ? '注册后即可进入标注工作台'
+    : '欢迎回来，请登录以继续使用';
+  $('authSubmitLabel').textContent = value === 'register' ? '注册并登录' : '登录';
   $('password').autocomplete = value === 'register' ? 'new-password' : 'current-password';
   showError('');
 }
@@ -107,6 +113,18 @@ document.querySelectorAll('.auth-tab').forEach((tab) => {
   tab.addEventListener('click', () => setMode(tab.dataset.tab));
 });
 $('authForm').addEventListener('submit', submit);
+
+/* 密码可见性切换，图标随状态切换；仅改 input 类型，不碰提交逻辑 */
+const passwordInput = $('password');
+const togglePassword = $('togglePassword');
+togglePassword.addEventListener('click', () => {
+  const visible = passwordInput.type === 'password';
+  passwordInput.type = visible ? 'text' : 'password';
+  togglePassword.classList.toggle('is-on', visible);
+  togglePassword.setAttribute('aria-pressed', visible ? 'true' : 'false');
+  togglePassword.setAttribute('aria-label', visible ? '隐藏密码' : '显示密码');
+  passwordInput.focus({ preventScroll: true });
+});
 
 if (next === '/admin') {
   $('registerHint').hidden = true;

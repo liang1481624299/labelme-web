@@ -62,7 +62,7 @@
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 428px);
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 448px);
   gap: clamp(32px, 5vw, 84px);
   align-items: center;
   width: min(1120px, 100% - 64px);
@@ -164,54 +164,103 @@
 }
 
 .auth-card {
+  position: relative;
   width: 100%;
-  max-width: none;
-  padding: 30px 28px 24px;
-  border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, .09);
-  background: linear-gradient(170deg, rgba(24, 30, 44, .82), rgba(14, 18, 27, .86));
-  backdrop-filter: blur(20px) saturate(150%);
-  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  max-width: 448px;
+  margin-inline: auto;
+  padding: 56px 32px 24px;
+  border-radius: 22px;
+  border: 1px solid rgba(176, 203, 219, .14);
+  background: linear-gradient(168deg, rgba(27, 37, 48, .66), rgba(13, 18, 26, .74));
+  backdrop-filter: blur(18px) saturate(165%);
+  -webkit-backdrop-filter: blur(18px) saturate(165%);
   box-shadow:
-    0 30px 70px rgba(0, 0, 0, .55),
-    0 2px 0 rgba(255, 255, 255, .05) inset,
-    0 0 0 1px rgba(80, 120, 255, .06) inset;
+    0 1px 0 rgba(255, 255, 255, .14) inset,
+    0 26px 65px -30px rgba(0, 0, 0, .72),
+    0 0 0 1px rgba(0, 0, 0, .20);
 }
 
 .auth-legal {
   margin: 16px 0 0;
   text-align: center;
   font-size: 11.5px;
-  color: #4d5b73;
+  color: #55647c;
 }
 
-/* 品牌行 */
-.auth-brand {
+/* 卡片顶部居中的图标与标题 */
+.auth-head {
+  text-align: center;
   margin-bottom: 22px;
-  font-size: 17px;
+}
+.auth-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 12px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, #55d7ff 0%, #0ea5e9 58%, #0284c7 100%);
+  box-shadow:
+    0 12px 28px -10px rgba(14, 165, 233, .85),
+    0 1px 0 rgba(255, 255, 255, .42) inset;
+}
+.auth-icon svg {
+  width: 23px;
+  height: 23px;
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.auth-title {
+  margin: 0 0 7px;
+  font-size: 24px;
+  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  color: #f3f7fb;
+}
+.auth-sub {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: #92a3b8;
+}
+
+/* 品牌小标签贴在卡片左上角，不占主视觉 */
+.auth-brand {
+  position: absolute;
+  top: 17px;
+  left: 22px;
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 500;
   letter-spacing: .01em;
+  color: #8496aa;
 }
 .auth-brand .dot {
-  width: 8px; height: 8px;
+  width: 6px; height: 6px;
   background: linear-gradient(140deg, #4d8dff, #9b7bff);
-  box-shadow: 0 0 14px rgba(77, 141, 255, .85);
+  box-shadow: 0 0 12px rgba(77, 141, 255, .8);
 }
 .auth-brand .ver {
-  padding: 2px 7px;
+  margin-left: 1px;
+  padding: 1px 6px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, .09);
-  font-size: 10.5px;
-  letter-spacing: .06em;
-  color: #7d8aa0;
+  border: 1px solid rgba(255, 255, 255, .08);
+  font-size: 9.5px;
+  letter-spacing: .05em;
+  color: #718198;
 }
 
 /* 分段控件式的登录/注册切换 */
 .auth-tabs {
   position: relative;
-  height: 38px;
+  height: 42px;
   padding: 3px;
   border: 1px solid rgba(255, 255, 255, .08);
-  border-radius: 11px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, .035);
   margin-bottom: 22px;
   overflow: hidden;
@@ -220,102 +269,190 @@
   position: relative;
   z-index: 1;
   height: 100%;
-  border-radius: 8px;
+  border-radius: 9px;
   font-size: 13.5px;
-  color: #7f8ca4;
-  transition: color .18s ease;
+  color: #8493a9;
+  transition: color .18s ease, background .18s ease, box-shadow .18s ease;
 }
 .auth-tab.active {
-  background: linear-gradient(180deg, rgba(90, 130, 255, .22), rgba(90, 130, 255, .1));
-  color: #e8f0ff;
-  box-shadow: 0 0 0 1px rgba(120, 155, 255, .22) inset, 0 6px 16px rgba(37, 76, 180, .22);
+  background: linear-gradient(180deg, rgba(56, 189, 248, .20), rgba(56, 189, 248, .09));
+  color: #eaf7ff;
+  box-shadow:
+    0 0 0 1px rgba(125, 211, 252, .28) inset,
+    0 5px 14px rgba(2, 132, 199, .20);
+}
+.auth-tab:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, .8);
+  outline-offset: 1px;
 }
 
-/* 输入框 */
-.field { margin-bottom: 16px; }
-.field > span {
-  margin-bottom: 7px;
-  font-size: 11.5px;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  color: #6d7c94;
+/* 输入框：白底胶囊感，和深色玻璃卡片形成对比 */
+.field { margin-bottom: 17px; }
+.field > .field-label {
+  display: block;
+  margin-bottom: 8px;
+  padding-left: 2px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #e8f1fb;
 }
+.input-wrap { position: relative; }
 .field input {
-  padding: 12px 13px;
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, .1);
-  background: rgba(255, 255, 255, .04);
-  color: #eef3ff;
-  font-size: 14px;
-  transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+  border: 1px solid rgba(255, 255, 255, .18);
+  background: #f8fafc;
+  color: #0b1521;
+  font: inherit;
+  font-size: 14.5px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, .75) inset,
+    0 2px 5px rgba(0, 0, 0, .18);
+  transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
+  outline: none;
 }
-.field input::placeholder { color: #5b6880; }
+.field input.has-affix { padding-right: 48px; }
+.field input::placeholder { color: #64748b; }
+.field input:hover { background: #fff; }
 .field input:focus {
-  border-color: rgba(110, 150, 255, .75);
-  background: rgba(255, 255, 255, .06);
-  box-shadow: 0 0 0 3px rgba(70, 110, 240, .18), 0 10px 30px rgba(20, 40, 100, .25);
+  border-color: #7dd3fc;
+  background: #fff;
+  box-shadow:
+    0 0 0 3px rgba(56, 189, 248, .25),
+    0 10px 24px -12px rgba(0, 0, 0, .5);
 }
+.field input:-webkit-autofill {
+  -webkit-text-fill-color: #0b1521;
+  box-shadow: 0 0 0 1000px #f8fafc inset;
+}
+.field-eye {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition: background .16s ease, color .16s ease;
+}
+.field-eye:hover { background: #e8edf3; color: #0f172a; }
+.field-eye:focus-visible { outline: 2px solid #38bdf8; outline-offset: 1px; }
+.field-eye svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.field-eye .eye-off { display: none; }
+.field-eye.is-on .eye-on { display: none; }
+.field-eye.is-on .eye-off { display: block; }
 
-.auth-hint { font-size: 12.5px; color: #78879f; line-height: 1.7; }
+.auth-hint { margin: 2px 0 14px; font-size: 12.5px; color: #8494aa; line-height: 1.7; }
 .auth-error {
+  margin: 0 0 14px;
+  padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid rgba(255, 96, 96, .38);
-  background: rgba(255, 74, 74, .1);
+  background: rgba(255, 74, 74, .10);
   color: #ffc0c0;
   font-size: 12.5px;
   line-height: 1.7;
 }
 
-/* 主按钮 */
+/* 主按钮：天蓝渐变胶囊 */
 .auth-submit {
-  margin-top: 4px;
-  padding: 13px 0;
-  border-radius: 11px;
-  background: linear-gradient(135deg, #3b82f6 0%, #6366f1 58%, #7c4dff 100%);
-  font-size: 14.5px;
-  letter-spacing: .02em;
-  box-shadow: 0 14px 32px rgba(56, 100, 240, .34), 0 1px 0 rgba(255, 255, 255, .22) inset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 46px;
+  margin-top: 6px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #3fc8f4 0%, #0da5e8 100%);
+  color: #fff;
+  font: 600 14.5px/1 "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  letter-spacing: .01em;
+  cursor: pointer;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, .35) inset,
+    0 12px 28px -10px rgba(14, 165, 233, .72);
   transition: transform .16s ease, box-shadow .16s ease, filter .16s ease;
 }
 .auth-submit:hover:not(:disabled) {
   transform: translateY(-1px);
-  filter: saturate(115%) brightness(1.06);
-  box-shadow: 0 18px 40px rgba(56, 100, 240, .42), 0 1px 0 rgba(255, 255, 255, .26) inset;
+  filter: brightness(1.06) saturate(110%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, .4) inset,
+    0 16px 34px -10px rgba(14, 165, 233, .82);
 }
 .auth-submit:active:not(:disabled) {
   transform: translateY(0);
-  box-shadow: 0 8px 20px rgba(56, 100, 240, .3);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, .3) inset,
+    0 6px 16px -8px rgba(14, 165, 233, .7);
 }
 .auth-submit:disabled { opacity: .65; cursor: progress; }
+.auth-submit .submit-ico {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: rgba(255, 255, 255, .92);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 
 /* 分隔线与 SSO */
 .auth-sso { margin-top: 20px; }
-.auth-sso-or { color: #5f6d86; font-size: 11.5px; letter-spacing: .1em; }
+.auth-sso-or { color: #6f8097; font-size: 11.5px; letter-spacing: .1em; }
 .auth-sso-or::before, .auth-sso-or::after {
   width: 36%;
   border-top-color: rgba(255, 255, 255, .09);
 }
 .auth-sso-btn {
-  padding: 12px 0;
-  border-radius: 11px;
-  border: 1px solid rgba(140, 170, 255, .38);
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(140, 170, 255, .34);
   background: linear-gradient(180deg, rgba(90, 130, 255, .12), rgba(90, 130, 255, .05));
-  color: #b9d2ff;
-  font-size: 14px;
+  color: #bdd4ff;
+  font: 600 14px/1 "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   letter-spacing: .02em;
+  cursor: pointer;
   transition: background .18s ease, border-color .18s ease, transform .16s ease;
 }
 .auth-sso-btn:hover {
-  background: linear-gradient(180deg, rgba(110, 150, 255, .2), rgba(90, 130, 255, .08));
-  border-color: rgba(150, 180, 255, .6);
+  background: linear-gradient(180deg, rgba(110, 150, 255, .20), rgba(90, 130, 255, .08));
+  border-color: rgba(150, 180, 255, .58);
   transform: translateY(-1px);
 }
 
 .auth-foot {
   margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, .06);
   font-size: 11.5px;
   line-height: 1.7;
-  color: #5f6d86;
+  text-align: center;
+  color: #6f8097;
 }
 
 /* ---------------------------------------------------------------- 响应式 */
@@ -332,7 +469,16 @@
   .hero-title span { display: inline; }
   .hero-sub { font-size: 13px; margin-bottom: 0; line-height: 1.75; }
   .hero-points, .hero-meta { display: none; }
-  .auth-card { padding: 24px 20px 20px; border-radius: 16px; }
+  .auth-card { padding: 52px 22px 20px; border-radius: 20px; }
+  .auth-title { font-size: 22px; }
+  .auth-sub { font-size: 13px; }
+
+@media (any-pointer: coarse) {
+  .auth-card { padding: 56px 24px 22px; }
+  .field input { height: 50px; font-size: 16px; }
+  .auth-submit, .auth-sso-btn { min-height: 50px; }
+  .field-eye { width: 40px; height: 40px; }
+}
 }
 
 @media (max-height: 700px) and (min-width: 941px) {
