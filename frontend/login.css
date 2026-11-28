@@ -310,17 +310,6 @@
   background: rgba(255, 255, 255, .55);
   pointer-events: none;
 }
-.auth-panel::after {
-  content: "L";
-  position: absolute;
-  right: -28px;
-  bottom: -92px;
-  z-index: -1;
-  color: rgba(22, 25, 23, .035);
-  font: 700 280px/1 "Segoe UI", system-ui, sans-serif;
-  letter-spacing: -.08em;
-  pointer-events: none;
-}
 
 .auth-panel-top {
   position: absolute;
